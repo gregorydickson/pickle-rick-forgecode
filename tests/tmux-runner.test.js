@@ -211,7 +211,7 @@ describe('handoff file', () => {
     const runner = createRunner(deps);
     await runner.run();
     const opts = deps.writeHandoff.mock.calls[0].arguments[1];
-    assert.equal(opts.ticket, 'TIX-42');
+    assert.equal(opts.currentTicket, 'TIX-42');
     assert.equal(opts.sha, 'deadbeef');
   });
 });
@@ -353,5 +353,213 @@ describe('ticket double-check', () => {
     const runner = createRunner(deps);
     await runner.run();
     assert.equal(deps.spawn.mock.callCount(), 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 13. EXISTENCE_IS_PAIN and ANALYSIS_DONE tokens
+// ---------------------------------------------------------------------------
+describe('completion tokens — extended', () => {
+  it('existence-is-pain', async () => {
+    const deps = makeDeps({ max_iterations: 10 });
+    deps.parseAutoDump = mock.fn(() => ({ tokens: ['EXISTENCE_IS_PAIN'], rawMessages: [] }));
+    deps.isDirty = mock.fn(() => true);
+    deps.getDiffStat = mock.fn(() => '1 file changed');
+    const runner = createRunner(deps);
+    await runner.run();
+    assert.equal(deps.spawn.mock.callCount(), 1, 'EXISTENCE_IS_PAIN should trigger clean exit');
+  });
+
+  it('analysis-done', async () => {
+    const deps = makeDeps({ max_iterations: 10 });
+    deps.parseAutoDump = mock.fn(() => ({ tokens: ['ANALYSIS_DONE'], rawMessages: [] }));
+    deps.isDirty = mock.fn(() => true);
+    deps.getDiffStat = mock.fn(() => '1 file changed');
+    const runner = createRunner(deps);
+    await runner.run();
+    assert.equal(deps.spawn.mock.callCount(), 1, 'ANALYSIS_DONE should trigger clean exit');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 14. Phase routing — pickle-manager for non-implement phases
+// ---------------------------------------------------------------------------
+describe('phase routing', () => {
+  it('phase-prd', async () => {
+    const deps = makeDeps({ step: 'prd', max_iterations: 1 });
+    const runner = createRunner(deps);
+    await runner.run();
+    const args = deps.spawn.mock.calls[0].arguments[1];
+    assert(args.some(a => a.includes('pickle-manager')), 'prd should route to pickle-manager');
+  });
+
+  it('phase-breakdown', async () => {
+    const deps = makeDeps({ step: 'breakdown', max_iterations: 1 });
+    const runner = createRunner(deps);
+    await runner.run();
+    const args = deps.spawn.mock.calls[0].arguments[1];
+    assert(args.some(a => a.includes('pickle-manager')), 'breakdown should route to pickle-manager');
+  });
+
+  it('phase-review', async () => {
+    const deps = makeDeps({ step: 'review', max_iterations: 1 });
+    const runner = createRunner(deps);
+    await runner.run();
+    const args = deps.spawn.mock.calls[0].arguments[1];
+    assert(args.some(a => a.includes('pickle-manager')), 'review should route to pickle-manager');
+  });
+
+  it('unknown-phase', async () => {
+    const deps = makeDeps({ step: 'xyzzy-unknown', max_iterations: 1 });
+    const runner = createRunner(deps);
+    await runner.run();
+    const args = deps.spawn.mock.calls[0].arguments[1];
+    assert(args.some(a => a.includes('pickle-manager')), 'unknown phase should default to pickle-manager');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 15. Signal handler — kill child + deactivate state
+// ---------------------------------------------------------------------------
+describe('signal handler — enhanced', () => {
+  it('signal-deactivate', async () => {
+    const deps = makeDeps({ max_iterations: 100 });
+    // Use a delayed child so setTimeout(0) for shutdown fires before child exits
+    deps.spawn = mock.fn(() => {
+      const child = new EventEmitter();
+      child.pid = 77777;
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.killed = false;
+      child.kill = mock.fn(() => {
+        child.killed = true;
+        setTimeout(() => child.emit('exit', null, 'SIGTERM'), 0);
+      });
+      // Child exits after 20ms — gives shutdown(10ms) time to fire first
+      setTimeout(() => {
+        if (!child.killed) child.emit('exit', 0, null);
+      }, 20);
+      return child;
+    });
+    const runner = createRunner(deps, { workerTimeoutMs: 60000 });
+    setTimeout(() => runner.shutdown(), 10);
+    await runner.run();
+    // Check that stateManager.update was called with active=false
+    const updateCalls = deps.stateManager.update.mock.calls;
+    const setActiveFalse = updateCalls.some(call => {
+      const testState = { active: true };
+      call.arguments[1](testState);
+      return testState.active === false;
+    });
+    assert(setActiveFalse, 'shutdown should set active=false via stateManager.update');
+  });
+
+  it('signal-kill-child', async () => {
+    const deps = makeDeps({ max_iterations: 100 });
+    let capturedChild;
+    deps.spawn = mock.fn(() => {
+      const child = new EventEmitter();
+      child.pid = 55555;
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.killed = false;
+      child.kill = mock.fn(() => {
+        child.killed = true;
+        setTimeout(() => child.emit('exit', null, 'SIGTERM'), 0);
+      });
+      capturedChild = child;
+      // Child exits after 50ms — shutdown(10ms) fires first
+      setTimeout(() => {
+        if (!child.killed) child.emit('exit', 0, null);
+      }, 50);
+      return child;
+    });
+    const runner = createRunner(deps, { workerTimeoutMs: 60000 });
+    setTimeout(() => runner.shutdown(), 10);
+    await runner.run();
+    assert(capturedChild.kill.mock.callCount() >= 1, 'shutdown should kill the current child process');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 16. Rich handoff content
+// ---------------------------------------------------------------------------
+describe('rich handoff', () => {
+  it('rich-handoff', async () => {
+    const deps = makeDeps({
+      max_iterations: 4,
+      iteration: 3,
+      step: 'implement',
+      current_ticket: 'RICH-1',
+      working_dir: '/projects/test',
+      session_dir: '/sessions/test',
+      start_time_epoch: Date.now(),
+      history: [
+        { ticket: 'DONE-1', status: 'done' },
+        { ticket: 'DONE-2', status: 'done' },
+      ],
+      tickets: ['DONE-1', 'DONE-2', 'RICH-1', 'PEND-1'],
+    });
+    const runner = createRunner(deps);
+    await runner.run();
+    const opts = deps.writeHandoff.mock.calls[0].arguments[1];
+    assert.equal(opts.step || opts.status, 'implement', 'should include phase/step');
+    assert.equal(opts.currentTicket || opts.ticket, 'RICH-1', 'should include current ticket');
+    assert(opts.iteration !== undefined, 'should include iteration');
+    assert(opts.workingDir || opts.working_dir, 'should include working dir');
+    assert(opts.sessionRoot || opts.session_dir, 'should include session root');
+    assert(opts.startTime || opts.start_time_epoch, 'should include start time');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 17. Parallel workers in worktrees
+// ---------------------------------------------------------------------------
+describe('parallel workers', () => {
+  it('parallel-worktrees', async () => {
+    const deps = makeDeps({ max_iterations: 1 });
+    deps.createWorktree = mock.fn();
+    deps.removeWorktree = mock.fn();
+    deps.cherryPick = mock.fn();
+    deps.getCurrentSha = mock.fn(() => 'abc123');
+    // Each spawn in a worktree should produce a child that exits successfully
+    deps.spawn = mock.fn(() => fakeChild(0));
+    const runner = createRunner(deps);
+    const tickets = ['T-1', 'T-2', 'T-3'];
+    const results = await runner.spawnParallelWorkers(tickets, '/base/dir');
+    assert.equal(results.length, 3, 'should return results for all tickets');
+    assert(deps.createWorktree.mock.callCount() >= 3, 'should create worktree per ticket');
+  });
+
+  it('parallel-cleanup', async () => {
+    const deps = makeDeps({ max_iterations: 1 });
+    deps.createWorktree = mock.fn();
+    deps.removeWorktree = mock.fn();
+    deps.cherryPick = mock.fn();
+    deps.getCurrentSha = mock.fn(() => 'abc123');
+    let callCount = 0;
+    deps.spawn = mock.fn(() => {
+      callCount++;
+      // Second ticket fails
+      return fakeChild(callCount === 2 ? 1 : 0);
+    });
+    const runner = createRunner(deps);
+    const results = await runner.spawnParallelWorkers(['T-1', 'T-2', 'T-3'], '/base/dir');
+    // All worktrees should be cleaned up regardless of success/failure
+    assert(deps.removeWorktree.mock.callCount() >= 3, 'should cleanup all worktrees including failed');
+    const failed = results.filter(r => r.code !== 0);
+    assert(failed.length >= 1, 'should report failed worker');
+  });
+
+  it('parallel-cherrypick', async () => {
+    const deps = makeDeps({ max_iterations: 1 });
+    deps.createWorktree = mock.fn();
+    deps.removeWorktree = mock.fn();
+    deps.cherryPick = mock.fn();
+    deps.getCurrentSha = mock.fn(() => 'def456');
+    deps.spawn = mock.fn(() => fakeChild(0));
+    const runner = createRunner(deps);
+    await runner.spawnParallelWorkers(['T-1', 'T-2'], '/base/dir');
+    assert(deps.cherryPick.mock.callCount() >= 2, 'should cherry-pick commits from successful workers');
   });
 });

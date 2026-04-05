@@ -18,11 +18,16 @@ import { writeHandoff as defaultWriteHandoff } from '../lib/handoff.js';
 // Constants
 // ---------------------------------------------------------------------------
 export const PHASE_AGENTS = {
-  research: 'morty-worker.md',
-  plan: 'morty-worker.md',
+  prd: 'pickle-manager.md',
+  breakdown: 'pickle-manager.md',
+  research: 'pickle-manager.md',
+  plan: 'pickle-manager.md',
   implement: 'morty-worker.md',
-  refactor: 'morty-worker.md',
+  refactor: 'pickle-manager.md',
+  review: 'pickle-manager.md',
 };
+
+export const DEFAULT_AGENT = 'pickle-manager.md';
 
 export const DEFAULT_CONFIG = {
   workerTimeoutMs: 10 * 60 * 1000,
@@ -30,7 +35,7 @@ export const DEFAULT_CONFIG = {
   rateLimitBackoffMs: 100,
 };
 
-const COMPLETION_TOKENS = ['I AM DONE', 'EPIC_COMPLETED'];
+const COMPLETION_TOKENS = ['I AM DONE', 'EPIC_COMPLETED', 'EXISTENCE_IS_PAIN', 'ANALYSIS_DONE'];
 
 // ---------------------------------------------------------------------------
 // Runner factory
@@ -47,24 +52,41 @@ export function createRunner(deps, configOverrides = {}) {
     isDirty,
     getDiffStat,
     statePath,
+    createWorktree: createWorktreeFn,
+    removeWorktree: removeWorktreeFn,
+    cherryPick: cherryPickFn,
   } = deps;
 
   let _shuttingDown = false;
+  let _currentChild = null;
 
   function shutdown() {
     _shuttingDown = true;
+    if (_currentChild && !_currentChild.killed) {
+      _currentChild.kill('SIGTERM');
+    }
+    stateManager.update(statePath, (s) => { s.active = false; });
   }
 
   async function spawnWorker(state) {
     const phase = state.step || 'implement';
-    const agentFile = PHASE_AGENTS[phase] || PHASE_AGENTS.implement;
+    const agentFile = PHASE_AGENTS[phase] || DEFAULT_AGENT;
 
     // Write handoff before spawn
     const sha = getCurrentSha();
+    const doneTickets = (state.history || []).filter(h => h.status === 'done').map(h => h.ticket);
+    const allTickets = state.tickets || [];
+    const pendingTickets = allTickets.filter(t => !doneTickets.includes(t));
     writeHandoff(state.session_dir || '/tmp', {
-      ticket: state.current_ticket,
+      iteration: state.iteration,
+      step: phase,
+      currentTicket: state.current_ticket,
+      workingDir: state.working_dir,
+      sessionRoot: state.session_dir,
+      ticketsDone: doneTickets,
+      ticketsPending: pendingTickets,
+      startTime: state.start_time_epoch,
       sha,
-      status: phase,
     });
 
     // Spawn forge -p with agent
@@ -72,6 +94,7 @@ export function createRunner(deps, configOverrides = {}) {
       cwd: state.working_dir,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
+    _currentChild = child;
 
     return new Promise((resolve) => {
       let stderrData = '';
@@ -96,6 +119,7 @@ export function createRunner(deps, configOverrides = {}) {
 
       child.on('exit', (code, signal) => {
         clearTimeout(timeoutTimer);
+        _currentChild = null;
         resolve({ code, signal, stderrData });
       });
     });
@@ -168,7 +192,39 @@ export function createRunner(deps, configOverrides = {}) {
     }
   }
 
-  return { run, shutdown };
+  async function spawnParallelWorkers(tickets, baseDir) {
+    const workerPromises = tickets.map(async (ticket) => {
+      const worktreePath = `${baseDir}/.worktree-${ticket}`;
+      const branch = `worktree/${ticket}`;
+      try {
+        createWorktreeFn(worktreePath, branch);
+        const child = spawnFn('forge', ['-p', PHASE_AGENTS.implement], {
+          cwd: worktreePath,
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+        const result = await new Promise((resolve) => {
+          let stderrData = '';
+          child.stderr.on('data', (chunk) => { stderrData += chunk.toString(); });
+          child.on('exit', (code, signal) => {
+            resolve({ ticket, code, signal, stderrData, worktreePath });
+          });
+        });
+        if (result.code === 0) {
+          const sha = getCurrentSha();
+          cherryPickFn(sha);
+        }
+        return result;
+      } finally {
+        removeWorktreeFn(worktreePath);
+      }
+    });
+    const settled = await Promise.allSettled(workerPromises);
+    return settled.map(s =>
+      s.status === 'fulfilled' ? s.value : { ticket: 'unknown', code: 1, error: s.reason?.message }
+    );
+  }
+
+  return { run, shutdown, spawnParallelWorkers };
 }
 
 // ---------------------------------------------------------------------------
