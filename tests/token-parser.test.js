@@ -7,6 +7,7 @@ import {
   parseAutoDump,
   extractTokensFromContent,
   filterAssistantMessages,
+  validateTokens,
   KNOWN_TOKENS,
 } from '../lib/token-parser.js';
 
@@ -62,6 +63,30 @@ describe('KNOWN_TOKENS', () => {
     assert(KNOWN_TOKENS.includes('I AM DONE'));
     assert(KNOWN_TOKENS.includes('EXISTENCE_IS_PAIN'));
     assert(KNOWN_TOKENS.includes('ANALYSIS_DONE'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validateTokens
+// ---------------------------------------------------------------------------
+describe('validateTokens', () => {
+  it('unknown-token-rejected', () => {
+    const result = validateTokens(['HACKED', 'FAKE_TOKEN', 'NONSENSE']);
+    assert.deepEqual(result, []);
+  });
+
+  it('known-token-accepted', () => {
+    const result = validateTokens(['I AM DONE', 'EPIC_COMPLETED']);
+    assert.deepEqual(result, ['I AM DONE', 'EPIC_COMPLETED']);
+  });
+
+  it('filters mixed known and unknown tokens', () => {
+    const result = validateTokens(['I AM DONE', 'GARBAGE', 'ANALYSIS_DONE']);
+    assert.deepEqual(result, ['I AM DONE', 'ANALYSIS_DONE']);
+  });
+
+  it('returns empty array for empty input', () => {
+    assert.deepEqual(validateTokens([]), []);
   });
 });
 
@@ -240,6 +265,17 @@ describe('parseAutoDump', () => {
     const dumpPath = writeDump(messages);
     const result = parseAutoDump(dumpPath);
     assert.deepEqual(result.tokens, ['EPIC_COMPLETED', 'I AM DONE', 'EXISTENCE_IS_PAIN', 'ANALYSIS_DONE']);
+  });
+
+  it('autodump-validated — rejects unknown tokens from dump', () => {
+    const messages = [
+      assistantMsg('<promise>HALLUCINATED_TOKEN</promise>'),
+      assistantMsg('<promise>I AM DONE</promise>'),
+      assistantMsg('<promise>FAKE</promise>'),
+    ];
+    const dumpPath = writeDump(messages);
+    const result = parseAutoDump(dumpPath);
+    assert.deepEqual(result.tokens, ['I AM DONE']);
   });
 
   it('returns rawMessages from the dump', () => {
