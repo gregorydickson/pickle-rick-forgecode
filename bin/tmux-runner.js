@@ -1,0 +1,214 @@
+#!/usr/bin/env node
+/**
+ * tmux-runner — Core orchestration loop for ForgeCode.
+ *
+ * Main loop: read state → check gates → select agent → write handoff →
+ * spawn forge -p → parse auto_dump → update state → next iteration.
+ *
+ * ESM module, zero external deps.
+ */
+import { spawn as defaultSpawn } from 'node:child_process';
+import { StateManager } from '../lib/state-manager.js';
+import { CircuitBreaker } from '../lib/circuit-breaker.js';
+import { parseAutoDump as defaultParseAutoDump } from '../lib/token-parser.js';
+import { getCurrentSha as defaultGetCurrentSha, isDirty as defaultIsDirty, getDiffStat as defaultGetDiffStat } from '../lib/git-utils.js';
+import { writeHandoff as defaultWriteHandoff } from '../lib/handoff.js';
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+export const PHASE_AGENTS = {
+  research: 'morty-worker.md',
+  plan: 'morty-worker.md',
+  implement: 'morty-worker.md',
+  refactor: 'morty-worker.md',
+};
+
+export const DEFAULT_CONFIG = {
+  workerTimeoutMs: 10 * 60 * 1000,
+  killEscalationMs: 5000,
+  rateLimitBackoffMs: 100,
+};
+
+const COMPLETION_TOKENS = ['I AM DONE', 'EPIC_COMPLETED'];
+
+// ---------------------------------------------------------------------------
+// Runner factory
+// ---------------------------------------------------------------------------
+export function createRunner(deps, configOverrides = {}) {
+  const config = { ...DEFAULT_CONFIG, ...configOverrides };
+  const {
+    stateManager,
+    circuitBreaker,
+    spawn: spawnFn,
+    parseAutoDump,
+    writeHandoff,
+    getCurrentSha,
+    isDirty,
+    getDiffStat,
+    statePath,
+  } = deps;
+
+  let _shuttingDown = false;
+
+  function shutdown() {
+    _shuttingDown = true;
+  }
+
+  async function spawnWorker(state) {
+    const phase = state.step || 'implement';
+    const agentFile = PHASE_AGENTS[phase] || PHASE_AGENTS.implement;
+
+    // Write handoff before spawn
+    const sha = getCurrentSha();
+    writeHandoff(state.session_dir || '/tmp', {
+      ticket: state.current_ticket,
+      sha,
+      status: phase,
+    });
+
+    // Spawn forge -p with agent
+    const child = spawnFn('forge', ['-p', agentFile], {
+      cwd: state.working_dir,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    return new Promise((resolve) => {
+      let stderrData = '';
+
+      child.stderr.on('data', (chunk) => {
+        stderrData += chunk.toString();
+      });
+
+      // Worker timeout: SIGTERM → SIGKILL escalation
+      const timeoutTimer = setTimeout(() => {
+        if (!child.killed) {
+          child.kill('SIGTERM');
+
+          // Escalate to SIGKILL after grace period
+          setTimeout(() => {
+            if (!child.killed) {
+              child.kill('SIGKILL');
+            }
+          }, config.killEscalationMs);
+        }
+      }, config.workerTimeoutMs);
+
+      child.on('exit', (code, signal) => {
+        clearTimeout(timeoutTimer);
+        resolve({ code, signal, stderrData });
+      });
+    });
+  }
+
+  async function run() {
+    while (!_shuttingDown) {
+      // Read current state
+      const state = stateManager.read(statePath);
+
+      // Gate: max iterations
+      if (state.iteration >= state.max_iterations) break;
+
+      // Gate: wall-clock time
+      if (state.max_time_minutes && state.start_time_epoch) {
+        const elapsed = Date.now() - state.start_time_epoch;
+        if (elapsed > state.max_time_minutes * 60 * 1000) break;
+      }
+
+      // Gate: circuit breaker
+      if (!circuitBreaker.canExecute()) break;
+
+      // Spawn worker
+      const result = await spawnWorker(state);
+
+      if (_shuttingDown) {
+        stateManager.update(statePath, (s) => { s.iteration = (s.iteration || 0) + 1; });
+        break;
+      }
+
+      // Parse auto_dump for tokens
+      const dumpPath = state.auto_dump_path || '/tmp/auto_dump.json';
+      const { tokens } = parseAutoDump(dumpPath);
+
+      // Check for completion tokens
+      const hasCompletionToken = tokens.some(t => COMPLETION_TOKENS.includes(t));
+
+      // Ticket double-check: token AND non-empty git diff
+      if (hasCompletionToken) {
+        const dirty = isDirty();
+        const diffStat = getDiffStat();
+        if (dirty && diffStat.length > 0) {
+          stateManager.update(statePath, (s) => { s.iteration = (s.iteration || 0) + 1; });
+          break;
+        }
+        // Token without diff — keep going
+      }
+
+      // Rate-limit detection
+      const hasRateLimit = result.stderrData.includes('429');
+      if (hasRateLimit) {
+        await new Promise(r => setTimeout(r, config.rateLimitBackoffMs));
+      }
+
+      // Record iteration with circuit breaker
+      const sha = getCurrentSha();
+      circuitBreaker.recordIteration({
+        headSha: sha,
+        step: state.step,
+        ticket: state.current_ticket,
+        hasUncommittedChanges: isDirty(),
+        hasStagedChanges: false,
+        error: result.code !== 0 ? `exit code ${result.code}` : null,
+      });
+
+      const updated = stateManager.update(statePath, (s) => {
+        s.iteration = (s.iteration || 0) + 1;
+      });
+      if (updated && updated.iteration >= state.max_iterations) break;
+    }
+  }
+
+  return { run, shutdown };
+}
+
+// ---------------------------------------------------------------------------
+// CLI entry point
+// ---------------------------------------------------------------------------
+async function main() {
+  const statePath = process.argv[2];
+  if (!statePath) {
+    process.stderr.write('Usage: tmux-runner.js <state-path>\n');
+    process.exit(1);
+  }
+
+  const sm = new StateManager();
+  const cbPath = statePath.replace('state.json', 'circuit_breaker.json');
+  const cb = new CircuitBreaker(cbPath, {}, sm);
+
+  const runner = createRunner({
+    stateManager: sm,
+    circuitBreaker: cb,
+    spawn: defaultSpawn,
+    parseAutoDump: defaultParseAutoDump,
+    writeHandoff: defaultWriteHandoff,
+    getCurrentSha: defaultGetCurrentSha,
+    isDirty: defaultIsDirty,
+    getDiffStat: defaultGetDiffStat,
+    statePath,
+  }, {
+    rateLimitBackoffMs: 30000,
+  });
+
+  process.on('SIGTERM', () => runner.shutdown());
+  process.on('SIGINT', () => runner.shutdown());
+
+  await runner.run();
+}
+
+// Only run main when executed directly (not imported)
+if (process.argv[1]?.endsWith('tmux-runner.js')) {
+  main().catch((err) => {
+    process.stderr.write(`Fatal: ${err.message}\n`);
+    process.exit(1);
+  });
+}
