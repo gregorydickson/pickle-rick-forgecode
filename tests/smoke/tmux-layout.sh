@@ -5,7 +5,7 @@ set -euo pipefail
 # Usage: tmux-layout.sh [session-name]
 
 SESSION_NAME="${1:-forgecode-smoke-$$}"
-EXPECTED_PANES=1
+EXPECTED_PANES=4
 
 cleanup() {
   tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
@@ -18,8 +18,13 @@ if ! command -v tmux &>/dev/null; then
   exit 1
 fi
 
-# Create detached session
+# Create detached session with 4 panes
 tmux new-session -d -s "$SESSION_NAME" -x 120 -y 40
+tmux split-window -t "$SESSION_NAME" -h
+tmux split-window -t "$SESSION_NAME" -v
+tmux select-pane -t "$SESSION_NAME:0.0"
+tmux split-window -t "$SESSION_NAME" -v
+tmux select-layout -t "$SESSION_NAME" tiled
 
 # Verify session exists
 if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
