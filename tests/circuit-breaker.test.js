@@ -565,13 +565,139 @@ describe('disabled', () => {
 describe('persistence', () => {
   it('persists state across instances', () => {
     const cb1 = makeCB({ halfOpenAfter: 2 });
-    cb1.recordIteration(noProgressSignals());
-    cb1.recordIteration(noProgressSignals());
+    cb1.recordIteration(noProgressSignals(), 1);
+    cb1.recordIteration(noProgressSignals(), 2);
     assert.equal(cb1.getState().state, 'HALF_OPEN');
 
     // New instance reading same file
     const cb2 = makeCB({ halfOpenAfter: 2 });
     assert.equal(cb2.getState().state, 'HALF_OPEN');
     assert.equal(cb2.getState().consecutive_no_progress, 2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// iteration-tracking
+// ---------------------------------------------------------------------------
+describe('iteration-tracking', () => {
+  it('recordIteration(signals, iteration) stores actual iteration number', () => {
+    const cb = makeCB({ halfOpenAfter: 5, noProgressThreshold: 10 });
+
+    // First call sets last_known_head but no progress (head was empty)
+    cb.recordIteration(noProgressSignals({ headSha: 'sha1' }), 1);
+    assert.equal(cb.getState().last_progress_iteration, 0);
+
+    // HEAD change = progress at iteration 2
+    cb.recordIteration(noProgressSignals({ headSha: 'sha2' }), 2);
+    assert.equal(cb.getState().last_progress_iteration, 2);
+
+    // No progress on iteration 3 — last_progress_iteration stays 2
+    cb.recordIteration(noProgressSignals({ headSha: 'sha2' }), 3);
+    assert.equal(cb.getState().last_progress_iteration, 2);
+
+    // Progress again on iteration 5 (skipped 4)
+    cb.recordIteration(noProgressSignals({ headSha: 'sha3' }), 5);
+    assert.equal(cb.getState().last_progress_iteration, 5);
+  });
+
+  it('does not increment last_progress_iteration as counter', () => {
+    const cb = makeCB({ halfOpenAfter: 5, noProgressThreshold: 10 });
+
+    // Seed head sha
+    cb.recordIteration(noProgressSignals({ headSha: 'sha0' }), 1);
+
+    // Progress at iteration 10
+    cb.recordIteration(noProgressSignals({ headSha: 'sha1' }), 10);
+    assert.equal(cb.getState().last_progress_iteration, 10);
+
+    // Progress at iteration 20 — should be 20, not 11
+    cb.recordIteration(noProgressSignals({ headSha: 'sha2' }), 20);
+    assert.equal(cb.getState().last_progress_iteration, 20);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// history-iteration
+// ---------------------------------------------------------------------------
+describe('history-iteration', () => {
+  it('history entries record the actual iteration number, not consecutive_no_progress', () => {
+    const cb = makeCB({ halfOpenAfter: 2, noProgressThreshold: 5 });
+
+    // Iterations 10 and 11: no progress -> HALF_OPEN at iteration 11
+    cb.recordIteration(noProgressSignals(), 10);
+    cb.recordIteration(noProgressSignals(), 11);
+    assert.equal(cb.getState().state, 'HALF_OPEN');
+
+    const history = cb.getState().history;
+    const transition = history.find(h => h.to === 'HALF_OPEN');
+    assert(transition);
+    // Should be 11 (the actual iteration), not 2 (consecutive_no_progress)
+    assert.equal(transition.iteration, 11);
+  });
+
+  it('HALF_OPEN -> CLOSED history records correct iteration', () => {
+    const cb = makeCB({ halfOpenAfter: 2 });
+    cb.recordIteration(noProgressSignals(), 1);
+    cb.recordIteration(noProgressSignals(), 2);
+    assert.equal(cb.getState().state, 'HALF_OPEN');
+
+    // Recovery at iteration 7
+    cb.recordIteration(noProgressSignals({ headSha: 'new-sha' }), 7);
+    assert.equal(cb.getState().state, 'CLOSED');
+
+    const recovery = cb.getState().history.find(h => h.to === 'CLOSED');
+    assert.equal(recovery.iteration, 7);
+  });
+
+  it('HALF_OPEN -> OPEN history records correct iteration', () => {
+    const cb = makeCB({ halfOpenAfter: 2, noProgressThreshold: 4 });
+    cb.recordIteration(noProgressSignals(), 3);
+    cb.recordIteration(noProgressSignals(), 4);
+    cb.recordIteration(noProgressSignals(), 5);
+    cb.recordIteration(noProgressSignals(), 6);
+    assert.equal(cb.getState().state, 'OPEN');
+
+    const openTransition = cb.getState().history.find(h => h.to === 'OPEN');
+    assert.equal(openTransition.iteration, 6);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// progress-iteration
+// ---------------------------------------------------------------------------
+describe('progress-iteration', () => {
+  it('last_progress_iteration reflects the last iteration with progress', () => {
+    const cb = makeCB({ halfOpenAfter: 10, noProgressThreshold: 20 });
+
+    // Seed head sha — no progress (head was empty)
+    cb.recordIteration(noProgressSignals({ headSha: 'sha0' }), 0);
+    assert.equal(cb.getState().last_progress_iteration, 0);
+
+    // Progress at iteration 1 (head changed)
+    cb.recordIteration(noProgressSignals({ headSha: 'sha1' }), 1);
+    assert.equal(cb.getState().last_progress_iteration, 1);
+
+    // No progress iterations 2-4
+    cb.recordIteration(noProgressSignals({ headSha: 'sha1' }), 2);
+    cb.recordIteration(noProgressSignals({ headSha: 'sha1' }), 3);
+    cb.recordIteration(noProgressSignals({ headSha: 'sha1' }), 4);
+    assert.equal(cb.getState().last_progress_iteration, 1);
+
+    // Progress again at iteration 5
+    cb.recordIteration(noProgressSignals({ headSha: 'sha2' }), 5);
+    assert.equal(cb.getState().last_progress_iteration, 5);
+
+    // No progress 6-8
+    cb.recordIteration(noProgressSignals({ headSha: 'sha2' }), 6);
+    cb.recordIteration(noProgressSignals({ headSha: 'sha2' }), 7);
+    cb.recordIteration(noProgressSignals({ headSha: 'sha2' }), 8);
+    assert.equal(cb.getState().last_progress_iteration, 5);
+  });
+
+  it('last_progress_iteration stays 0 when no progress ever occurs', () => {
+    const cb = makeCB({ halfOpenAfter: 3, noProgressThreshold: 5 });
+    cb.recordIteration(noProgressSignals(), 1);
+    cb.recordIteration(noProgressSignals(), 2);
+    assert.equal(cb.getState().last_progress_iteration, 0);
   });
 });

@@ -159,7 +159,7 @@ export function createRunner(deps, configOverrides = {}) {
         hasUncommittedChanges: isDirty(),
         hasStagedChanges: false,
         error: result.code !== 0 ? `exit code ${result.code}` : null,
-      });
+      }, state.iteration || 0);
 
       const updated = stateManager.update(statePath, (s) => {
         s.iteration = (s.iteration || 0) + 1;
