@@ -156,10 +156,29 @@ describe('judge-no-persona', () => {
 // Text before tool call — all agents
 // ---------------------------------------------------------------------------
 describe('text-before-tool', () => {
-  for (const file of AGENT_FILES) {
+  const nonJudgeFiles = AGENT_FILES.filter(f => !JUDGE_AGENTS.includes(f.replace('.md', '')));
+
+  for (const file of nonJudgeFiles) {
     it(`${file} has text-before-tool-call rule`, () => {
       const content = fs.readFileSync(path.join(AGENTS_DIR, file), 'utf-8');
       assert.ok(/text before.*tool call/i.test(content), `${file} must have "text before tool call" rule`);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Judge agents — output rules (single number only, no text-before-tool)
+// ---------------------------------------------------------------------------
+describe('judge-output-rules', () => {
+  for (const agentId of JUDGE_AGENTS) {
+    it(`${agentId}.md has NO text-before-tool-call rule`, () => {
+      const content = fs.readFileSync(path.join(AGENTS_DIR, `${agentId}.md`), 'utf-8');
+      assert.ok(!/text before.*tool call/i.test(content), `${agentId}.md must NOT have "text before tool call" rule`);
+    });
+
+    it(`${agentId}.md has single-number output instruction`, () => {
+      const content = fs.readFileSync(path.join(AGENTS_DIR, `${agentId}.md`), 'utf-8');
+      assert.ok(/entire response should be a single number/i.test(content), `${agentId}.md must instruct single-number output`);
     });
   }
 });
