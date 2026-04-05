@@ -335,6 +335,40 @@ describe('transaction', () => {
     assert.equal(s2.name, 'a');
   });
 
+  it('passes states to mutator in caller-specified order, not sorted (transaction-ordering)', () => {
+    // z.json sorts AFTER a.json, so if mutator gets sorted order,
+    // the first arg would be a-state, not z-state
+    const fpZ = path.join(tmpDir, 'z.json');
+    const fpA = path.join(tmpDir, 'a.json');
+    writeJSON(fpZ, { schema_version: 1, name: 'z', val: 0 });
+    writeJSON(fpA, { schema_version: 1, name: 'a', val: 0 });
+    const sm = new StateManager();
+    sm.transaction([fpZ, fpA], ([first, second]) => {
+      // Asymmetric mutation: first should be z-state, second should be a-state
+      first.val = 'set_by_first';
+      second.val = 'set_by_second';
+    });
+    // Verify on disk: z.json should have val from first, a.json from second
+    const zDisk = JSON.parse(fs.readFileSync(fpZ, 'utf-8'));
+    const aDisk = JSON.parse(fs.readFileSync(fpA, 'utf-8'));
+    assert.equal(zDisk.val, 'set_by_first', 'z.json should be mutated by first arg');
+    assert.equal(aDisk.val, 'set_by_second', 'a.json should be mutated by second arg');
+  });
+
+  it('acquires locks in sorted order for deadlock prevention (transaction-lock-order)', () => {
+    const fpZ = path.join(tmpDir, 'z.json');
+    const fpA = path.join(tmpDir, 'a.json');
+    writeJSON(fpZ, { schema_version: 1, name: 'z' });
+    writeJSON(fpA, { schema_version: 1, name: 'a' });
+    const sm = new StateManager();
+    const lockOrder = [];
+    const origAcquire = sm._acquireLock.bind(sm);
+    sm._acquireLock = (p) => { lockOrder.push(p); return origAcquire(p); };
+    sm.transaction([fpZ, fpA], () => {});
+    // Locks must be acquired in sorted (alphabetical) order regardless of caller order
+    assert.deepEqual(lockOrder, [fpA, fpZ], 'locks should be acquired in sorted path order');
+  });
+
   it('rolls back on write failure and throws TransactionError', () => {
     const fp1 = path.join(tmpDir, 'a.json');
     const fp2 = path.join(tmpDir, 'b.json');
