@@ -363,7 +363,7 @@ describe('model-selection', () => {
     await spawnRefinementTeam(deps);
     const riskCall = deps._mockForge.calls.find(c => c.role === 'risk-scope');
     const agentIdx = riskCall.args.indexOf('--agent');
-    assert.equal(riskCall.args[agentIdx + 1], 'analyst-risk');
+    assert.equal(riskCall.args[agentIdx + 1], 'analyst-risk-scope');
   });
 
   it('reads model from agent definition files when agentDir provided', async () => {

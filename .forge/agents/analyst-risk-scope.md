@@ -1,5 +1,5 @@
 ---
-id: analyst-risk
+id: analyst-risk-scope
 title: "Risk & Scope Analyst"
 model: anthropic/claude-haiku-4-5
 tools: [read, fs_search, sem_search, skill]
