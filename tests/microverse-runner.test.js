@@ -9,6 +9,8 @@ import os from 'node:os';
 import {
   runMicroverse,
   measureMetric,
+  measureLlmMetric,
+  getDiffFiles,
   compareAndRollback,
   isConverged,
   writeHandoffContent,
@@ -353,5 +355,182 @@ describe('max-iterations', () => {
     await runMicroverse({ sessionDir: tmpDir, deps });
     const finalState = deps.stateManager.read();
     assert.equal(finalState.exit_reason, 'max_iterations');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 15. szechuan-mode — correct config with convergence_mode=metric,
+//     metric.type=llm, direction=lower, target=0
+// ---------------------------------------------------------------------------
+describe('szechuan-mode', () => {
+  it('uses szechuan-reviewer worker and microverse-judge config', async () => {
+    const deps = makeMockDeps({
+      convergence_mode: 'szechuan',
+      convergence_target: 0,
+      baseline_score: 10,
+      key_metric: {
+        description: 'code quality issues',
+        validation: 'forge -p microverse-judge',
+        type: 'llm',
+        direction: 'lower',
+      },
+    });
+    deps.measureLlmMetric = mock.fn(() => 5);
+    await runMicroverse({ sessionDir: tmpDir, deps, maxIterations: 1 });
+
+    // Worker should be szechuan-reviewer
+    const spawnCalls = deps.spawn.mock.calls;
+    const workerCall = spawnCalls.find(
+      c => c.arguments.some(a => typeof a === 'string' && a.includes('szechuan-reviewer'))
+    );
+    assert.ok(workerCall, 'should spawn szechuan-reviewer as worker');
+
+    // Config should use direction=lower, target=0
+    assert.equal(deps.state.convergence_target, 0);
+    assert.equal(deps.state.key_metric.direction, 'lower');
+    assert.equal(deps.state.key_metric.type, 'llm');
+  });
+
+  it('AGENT_DEFS includes szechuan-reviewer and microverse-judge', () => {
+    const reviewer = AGENT_DEFS.find(a => a.id === 'szechuan-reviewer');
+    assert.ok(reviewer, 'szechuan-reviewer should be in AGENT_DEFS');
+    const judge = AGENT_DEFS.find(a => a.id === 'microverse-judge');
+    assert.ok(judge, 'microverse-judge should be in AGENT_DEFS');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 16. diff-scope — handoff includes ONLY files from git diff --name-only
+// ---------------------------------------------------------------------------
+describe('diff-scope', () => {
+  it('handoff includes only diff files in szechuan mode', async () => {
+    const diffFiles = ['lib/foo.js', 'tests/foo.test.js'];
+    const deps = makeMockDeps({
+      convergence_mode: 'szechuan',
+      convergence_target: 0,
+      baseline_score: 10,
+      start_sha: 'abc1234',
+      key_metric: {
+        description: 'issues',
+        validation: 'judge',
+        type: 'llm',
+        direction: 'lower',
+      },
+    });
+    deps.execSync = mock.fn((cmd) => {
+      if (typeof cmd === 'string' && cmd.includes('diff --name-only')) {
+        return Buffer.from(diffFiles.join('\n') + '\n');
+      }
+      if (typeof cmd === 'string' && cmd.includes('rev-parse')) return Buffer.from('abc1234');
+      return Buffer.from('');
+    });
+    deps.measureLlmMetric = mock.fn(() => 5);
+    await runMicroverse({ sessionDir: tmpDir, deps, maxIterations: 1 });
+
+    const handoff = fs.readFileSync(path.join(tmpDir, 'handoff.txt'), 'utf-8');
+    assert.ok(handoff.includes('## Diff Scope'), 'handoff should have Diff Scope section');
+    assert.ok(handoff.includes('lib/foo.js'), 'handoff should include diff file lib/foo.js');
+    assert.ok(handoff.includes('tests/foo.test.js'), 'handoff should include diff file tests/foo.test.js');
+  });
+
+  it('falls back to HEAD~1 when start_sha is missing', () => {
+    const stderrLines = [];
+    const origWrite = process.stderr.write;
+    process.stderr.write = (msg) => { stderrLines.push(msg); return true; };
+    try {
+      getDiffFiles(null, {
+        execSync: mock.fn(() => Buffer.from('file.js\n')),
+      });
+    } finally {
+      process.stderr.write = origWrite;
+    }
+    assert.ok(
+      stderrLines.some(l => l.includes('missing start_sha')),
+      'should warn about missing start_sha'
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 17. szechuan-regression — test fail triggers rollback
+// ---------------------------------------------------------------------------
+describe('szechuan-regression', () => {
+  it('rolls back when LLM score increases (direction=lower)', async () => {
+    const preSha = 'pre123';
+    const deps = makeMockDeps({
+      convergence_mode: 'szechuan',
+      convergence_target: 0,
+      baseline_score: 5,
+      key_metric: {
+        description: 'issues',
+        validation: 'judge',
+        type: 'llm',
+        direction: 'lower',
+      },
+    });
+    deps.execSync = mock.fn((cmd) => {
+      if (typeof cmd === 'string' && cmd.includes('rev-parse')) return Buffer.from(preSha);
+      if (typeof cmd === 'string' && cmd.includes('diff --name-only')) return Buffer.from('a.js\n');
+      return Buffer.from('');
+    });
+    // Score 8 > baseline 5 = regression in lower-is-better
+    deps.measureLlmMetric = mock.fn(() => 8);
+
+    await runMicroverse({ sessionDir: tmpDir, deps, maxIterations: 1 });
+
+    const resetCalls = deps.execSync.mock.calls.filter(
+      c => typeof c.arguments[0] === 'string' && c.arguments[0].includes('git reset --hard')
+    );
+    assert.ok(resetCalls.length > 0, 'should rollback on regression');
+    assert.ok(
+      deps.state.failed_approaches.length > 0,
+      'should record failed approach'
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 18. llm-judge-retry — non-numeric output retries once
+// ---------------------------------------------------------------------------
+describe('llm-judge-retry', () => {
+  it('retries once when judge returns non-numeric output', () => {
+    let callCount = 0;
+    const result = measureLlmMetric(
+      { type: 'llm', validation: 'judge' },
+      {
+        execSync: mock.fn(() => {
+          callCount++;
+          if (callCount === 1) return Buffer.from('thinking...\nnot a number');
+          return Buffer.from('7');
+        }),
+      }
+    );
+    assert.equal(result, 7, 'should return numeric result after retry');
+    assert.equal(callCount, 2, 'should have called execSync twice');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 19. llm-judge-failure — two non-numeric fails → skip + log warning
+// ---------------------------------------------------------------------------
+describe('llm-judge-failure', () => {
+  it('returns null and logs warning after two non-numeric failures', () => {
+    const stderrLines = [];
+    const origWrite = process.stderr.write;
+    process.stderr.write = (msg) => { stderrLines.push(msg); return true; };
+    let result;
+    try {
+      result = measureLlmMetric(
+        { type: 'llm', validation: 'judge' },
+        { execSync: mock.fn(() => Buffer.from('I cannot provide a score')) }
+      );
+    } finally {
+      process.stderr.write = origWrite;
+    }
+    assert.equal(result, null, 'should return null on double failure');
+    assert.ok(
+      stderrLines.some(l => l.includes('failed after 2 attempts')),
+      'should log warning about failure'
+    );
   });
 });
