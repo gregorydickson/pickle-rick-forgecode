@@ -43,7 +43,7 @@ function spawnWorker(deps, role, cycle, prompt) {
 
   return new Promise((resolve) => {
     const agentName = ROLE_AGENTS[role];
-    const args = ['-p', prompt, '--agent', agentName];
+    const args = ['-p', prompt, '--agent', agentName, '-C', refinementDir];
     const child = spawn('forge', args, {});
 
     let stderrBuf = '';

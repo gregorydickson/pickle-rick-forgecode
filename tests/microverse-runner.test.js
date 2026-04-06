@@ -134,11 +134,13 @@ describe('gap-analysis', () => {
   it('spawns analyst agent when status is gap_analysis', async () => {
     const deps = makeMockDeps({ status: 'gap_analysis' });
     await runMicroverse({ sessionDir: tmpDir, deps });
-    const firstSpawnArgs = deps.spawn.mock.calls[0].arguments;
-    assert.ok(
-      firstSpawnArgs.some(a => typeof a === 'string' && a.includes('microverse-analyst')),
-      'first spawn should reference microverse-analyst agent'
-    );
+    const firstArgs = deps.spawn.mock.calls[0].arguments;
+    assert.equal(firstArgs[0], 'forge', 'should spawn forge');
+    const args = firstArgs[1];
+    assert(Array.isArray(args), 'args should be an array');
+    assert(args.includes('--agent'), 'should have --agent flag');
+    const agentIdx = args.indexOf('--agent');
+    assert.equal(args[agentIdx + 1], 'microverse-analyst', '--agent should be microverse-analyst');
   });
 });
 
@@ -146,21 +148,27 @@ describe('gap-analysis', () => {
 // 3. context-clearing — each iteration = new forge -p (no --cid)
 // ---------------------------------------------------------------------------
 describe('context-clearing', () => {
-  it('each iteration spawns forge without --cid flag', async () => {
+  it('each iteration spawns forge with array args containing --agent and -C', async () => {
     const deps = makeMockDeps({ max_iterations: 2 });
     await runMicroverse({ sessionDir: tmpDir, deps });
     for (const call of deps.spawn.mock.calls) {
-      const args = call.arguments.flat().join(' ');
-      assert.ok(!args.includes('--cid'), `spawn should not contain --cid: ${args}`);
+      const args = call.arguments[1];
+      assert(Array.isArray(args), 'spawn args should be an array');
+      assert(args.includes('-p'), 'should have -p flag');
+      assert(args.includes('--agent'), 'should have --agent flag');
+      assert(args.includes('-C'), 'should have -C flag');
+      assert(!args.join(' ').includes('--cid'), 'should not contain --cid');
     }
   });
 
-  it('each iteration includes -p flag', async () => {
-    const deps = makeMockDeps({ max_iterations: 2 });
+  it('each iteration passes -C with sessionDir', async () => {
+    const deps = makeMockDeps({ max_iterations: 1 });
     await runMicroverse({ sessionDir: tmpDir, deps });
     for (const call of deps.spawn.mock.calls) {
-      const args = call.arguments.flat().join(' ');
-      assert.ok(args.includes('-p'), `spawn should contain -p flag: ${args}`);
+      const args = call.arguments[1];
+      const cIdx = args.indexOf('-C');
+      assert(cIdx >= 0, 'should have -C flag');
+      assert.equal(args[cIdx + 1], tmpDir, '-C should point to sessionDir');
     }
   });
 });
@@ -346,6 +354,26 @@ describe('preflight', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 13b. spawnWorker standalone — uses array args with --agent and -C
+// ---------------------------------------------------------------------------
+describe('spawnWorker-standalone', () => {
+  it('passes array args with --agent and -C to forge', () => {
+    const spawnFn = mock.fn(() => fakeChild());
+    spawnWorker('microverse-worker', '/tmp/session', { spawn: spawnFn });
+    const call = spawnFn.mock.calls[0];
+    assert.equal(call.arguments[0], 'forge', 'should spawn forge');
+    const args = call.arguments[1];
+    assert(Array.isArray(args), 'args should be an array');
+    assert(args.includes('--agent'), 'should have --agent flag');
+    const agentIdx = args.indexOf('--agent');
+    assert.equal(args[agentIdx + 1], 'microverse-worker', '--agent should be microverse-worker');
+    assert(args.includes('-C'), 'should have -C flag');
+    const cIdx = args.indexOf('-C');
+    assert.equal(args[cIdx + 1], '/tmp/session', '-C should point to sessionDir');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 14. max-iterations — exits after max
 // ---------------------------------------------------------------------------
 describe('max-iterations', () => {
@@ -378,12 +406,15 @@ describe('szechuan-mode', () => {
     deps.measureLlmMetric = mock.fn(() => 5);
     await runMicroverse({ sessionDir: tmpDir, deps, maxIterations: 1 });
 
-    // Worker should be szechuan-reviewer
+    // Worker should be szechuan-reviewer via --agent
     const spawnCalls = deps.spawn.mock.calls;
-    const workerCall = spawnCalls.find(
-      c => c.arguments.some(a => typeof a === 'string' && a.includes('szechuan-reviewer'))
-    );
-    assert.ok(workerCall, 'should spawn szechuan-reviewer as worker');
+    const workerCall = spawnCalls.find(c => {
+      const args = c.arguments[1];
+      if (!Array.isArray(args)) return false;
+      const agentIdx = args.indexOf('--agent');
+      return agentIdx >= 0 && args[agentIdx + 1] === 'szechuan-reviewer';
+    });
+    assert.ok(workerCall, 'should spawn szechuan-reviewer as worker via --agent');
 
     // Config should use direction=lower, target=0
     assert.equal(deps.state.convergence_target, 0);

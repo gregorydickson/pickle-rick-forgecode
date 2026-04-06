@@ -254,6 +254,15 @@ describe('parallel-spawn', () => {
       );
     }
   });
+
+  it('passes -C flag with working directory', async () => {
+    const deps = makeDeps({ cycles: 1 });
+    await spawnRefinementTeam(deps);
+    for (const call of deps._mockForge.calls) {
+      const args = call.args;
+      assert(args.includes('-C'), `Worker ${call.role} should have -C flag`);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

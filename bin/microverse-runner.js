@@ -118,7 +118,7 @@ export function compareAndRollback(current, previous, preSha, deps) {
 
 export function spawnWorker(agentId, sessionDir, deps) {
   const spawnFn = deps?.spawn || defaultSpawn;
-  const child = spawnFn('forge', '-p', agentId, {
+  const child = spawnFn('forge', ['-p', `Microverse worker: ${agentId}`, '--agent', agentId, '-C', sessionDir], {
     cwd: sessionDir,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
@@ -149,7 +149,7 @@ export async function runMicroverse({ sessionDir, deps, maxIterations }) {
     // Gap analysis phase — spawn analyst first
     if (state.status === 'gap_analysis') {
       const analystDef = AGENT_DEFS.find(a => a.id === 'microverse-analyst');
-      const child = spawnFn('forge', '-p', analystDef.id, {
+      const child = spawnFn('forge', ['-p', `Gap analysis for ${sessionDir}`, '--agent', analystDef.id, '-C', sessionDir], {
         cwd: sessionDir,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
@@ -196,7 +196,8 @@ export async function runMicroverse({ sessionDir, deps, maxIterations }) {
       // Spawn worker — szechuan uses szechuan-reviewer
       const workerId = isSzechuan ? 'szechuan-reviewer' : 'microverse-worker';
       const workerDef = AGENT_DEFS.find(a => a.id === workerId);
-      const child = spawnFn('forge', '-p', workerDef.id, {
+      const handoffContent = fs.readFileSync(handoffPath, 'utf-8');
+      const child = spawnFn('forge', ['-p', handoffContent, '--agent', workerDef.id, '-C', sessionDir], {
         cwd: sessionDir,
         stdio: ['pipe', 'pipe', 'pipe'],
       });

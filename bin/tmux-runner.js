@@ -18,16 +18,16 @@ import { writeHandoff as defaultWriteHandoff } from '../lib/handoff.js';
 // Constants
 // ---------------------------------------------------------------------------
 export const PHASE_AGENTS = {
-  prd: 'pickle-manager.md',
-  breakdown: 'pickle-manager.md',
-  research: 'pickle-manager.md',
-  plan: 'pickle-manager.md',
-  implement: 'morty-worker.md',
-  refactor: 'pickle-manager.md',
-  review: 'pickle-manager.md',
+  prd: 'pickle-manager',
+  breakdown: 'pickle-manager',
+  research: 'pickle-manager',
+  plan: 'pickle-manager',
+  implement: 'morty-worker',
+  refactor: 'pickle-manager',
+  review: 'pickle-manager',
 };
 
-export const DEFAULT_AGENT = 'pickle-manager.md';
+export const DEFAULT_AGENT = 'pickle-manager';
 
 export const DEFAULT_CONFIG = {
   workerTimeoutMs: 10 * 60 * 1000,
@@ -77,7 +77,7 @@ export function createRunner(deps, configOverrides = {}) {
     const doneTickets = (state.history || []).filter(h => h.status === 'done').map(h => h.ticket);
     const allTickets = state.tickets || [];
     const pendingTickets = allTickets.filter(t => !doneTickets.includes(t));
-    writeHandoff(state.session_dir || '/tmp', {
+    const handoffContent = writeHandoff(state.session_dir || '/tmp', {
       iteration: state.iteration,
       step: phase,
       currentTicket: state.current_ticket,
@@ -90,7 +90,7 @@ export function createRunner(deps, configOverrides = {}) {
     });
 
     // Spawn forge -p with agent
-    const child = spawnFn('forge', ['-p', agentFile], {
+    const child = spawnFn('forge', ['-p', handoffContent, '--agent', agentFile, '-C', state.working_dir], {
       cwd: state.working_dir,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -198,7 +198,7 @@ export function createRunner(deps, configOverrides = {}) {
       const branch = `worktree/${ticket}`;
       try {
         createWorktreeFn(worktreePath, branch);
-        const child = spawnFn('forge', ['-p', PHASE_AGENTS.implement], {
+        const child = spawnFn('forge', ['-p', `Parallel worker for ticket ${ticket}`, '--agent', PHASE_AGENTS.implement, '-C', worktreePath], {
           cwd: worktreePath,
           stdio: ['pipe', 'pipe', 'pipe'],
         });

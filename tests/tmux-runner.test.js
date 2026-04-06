@@ -78,7 +78,7 @@ function makeDeps(stateOverrides = {}, depsOverrides = {}) {
     },
     spawn: mock.fn(() => fakeChild()),
     parseAutoDump: mock.fn(() => ({ tokens: [], rawMessages: [] })),
-    writeHandoff: mock.fn(),
+    writeHandoff: mock.fn(() => 'mock handoff content'),
     getCurrentSha: mock.fn(() => 'abc123'),
     isDirty: mock.fn(() => false),
     getDiffStat: mock.fn(() => ''),
@@ -99,13 +99,42 @@ describe('context clearing', () => {
     assert.equal(deps.spawn.mock.callCount(), 3);
   });
 
-  it('passes -p flag to forge spawn', async () => {
+  it('passes -p flag with handoff content to forge spawn', async () => {
     const deps = makeDeps({ max_iterations: 1 });
+    deps.writeHandoff = mock.fn(() => 'handoff content');
     const runner = createRunner(deps);
     await runner.run();
     const call = deps.spawn.mock.calls[0];
     assert.equal(call.arguments[0], 'forge');
-    assert(call.arguments[1].includes('-p'));
+    const args = call.arguments[1];
+    assert(args.includes('-p'), 'should have -p flag');
+    const pIdx = args.indexOf('-p');
+    assert.notEqual(args[pIdx + 1], undefined, '-p should have a value');
+    assert(!args[pIdx + 1].endsWith('.md'), '-p value should not be a .md filename');
+  });
+
+  it('passes --agent flag with agent ID (no .md)', async () => {
+    const deps = makeDeps({ max_iterations: 1 });
+    deps.writeHandoff = mock.fn(() => 'handoff content');
+    const runner = createRunner(deps);
+    await runner.run();
+    const args = deps.spawn.mock.calls[0].arguments[1];
+    assert(args.includes('--agent'), 'should have --agent flag');
+    const agentIdx = args.indexOf('--agent');
+    const agentId = args[agentIdx + 1];
+    assert(agentId, '--agent should have a value');
+    assert(!agentId.endsWith('.md'), 'agent ID should not have .md extension');
+  });
+
+  it('passes -C flag with working directory', async () => {
+    const deps = makeDeps({ max_iterations: 1, working_dir: '/tmp/test-project' });
+    deps.writeHandoff = mock.fn(() => 'handoff content');
+    const runner = createRunner(deps);
+    await runner.run();
+    const args = deps.spawn.mock.calls[0].arguments[1];
+    assert(args.includes('-C'), 'should have -C flag');
+    const cIdx = args.indexOf('-C');
+    assert.equal(args[cIdx + 1], '/tmp/test-project', '-C should point to working dir');
   });
 });
 
@@ -113,20 +142,26 @@ describe('context clearing', () => {
 // 2. Agent selection
 // ---------------------------------------------------------------------------
 describe('agent selection', () => {
-  it('maps research phase to research agent', async () => {
+  it('maps research phase to research agent via --agent', async () => {
     const deps = makeDeps({ step: 'research', max_iterations: 1 });
+    deps.writeHandoff = mock.fn(() => 'handoff');
     const runner = createRunner(deps);
     await runner.run();
     const args = deps.spawn.mock.calls[0].arguments[1];
-    assert(args.some(a => a.includes(PHASE_AGENTS.research)));
+    const agentIdx = args.indexOf('--agent');
+    assert(agentIdx >= 0, 'should have --agent flag');
+    assert.equal(args[agentIdx + 1], PHASE_AGENTS.research);
   });
 
-  it('maps implement phase to implement agent', async () => {
+  it('maps implement phase to implement agent via --agent', async () => {
     const deps = makeDeps({ step: 'implement', max_iterations: 1 });
+    deps.writeHandoff = mock.fn(() => 'handoff');
     const runner = createRunner(deps);
     await runner.run();
     const args = deps.spawn.mock.calls[0].arguments[1];
-    assert(args.some(a => a.includes(PHASE_AGENTS.implement)));
+    const agentIdx = args.indexOf('--agent');
+    assert(agentIdx >= 0, 'should have --agent flag');
+    assert.equal(args[agentIdx + 1], PHASE_AGENTS.implement);
   });
 
   it('exports PHASE_AGENTS mapping for all phases', () => {
@@ -387,34 +422,42 @@ describe('completion tokens — extended', () => {
 describe('phase routing', () => {
   it('phase-prd', async () => {
     const deps = makeDeps({ step: 'prd', max_iterations: 1 });
+    deps.writeHandoff = mock.fn(() => 'handoff');
     const runner = createRunner(deps);
     await runner.run();
     const args = deps.spawn.mock.calls[0].arguments[1];
-    assert(args.some(a => a.includes('pickle-manager')), 'prd should route to pickle-manager');
+    const agentIdx = args.indexOf('--agent');
+    assert(agentIdx >= 0 && args[agentIdx + 1].includes('pickle-manager'), 'prd should route to pickle-manager via --agent');
   });
 
   it('phase-breakdown', async () => {
     const deps = makeDeps({ step: 'breakdown', max_iterations: 1 });
+    deps.writeHandoff = mock.fn(() => 'handoff');
     const runner = createRunner(deps);
     await runner.run();
     const args = deps.spawn.mock.calls[0].arguments[1];
-    assert(args.some(a => a.includes('pickle-manager')), 'breakdown should route to pickle-manager');
+    const agentIdx = args.indexOf('--agent');
+    assert(agentIdx >= 0 && args[agentIdx + 1].includes('pickle-manager'), 'breakdown should route to pickle-manager via --agent');
   });
 
   it('phase-review', async () => {
     const deps = makeDeps({ step: 'review', max_iterations: 1 });
+    deps.writeHandoff = mock.fn(() => 'handoff');
     const runner = createRunner(deps);
     await runner.run();
     const args = deps.spawn.mock.calls[0].arguments[1];
-    assert(args.some(a => a.includes('pickle-manager')), 'review should route to pickle-manager');
+    const agentIdx = args.indexOf('--agent');
+    assert(agentIdx >= 0 && args[agentIdx + 1].includes('pickle-manager'), 'review should route to pickle-manager via --agent');
   });
 
   it('unknown-phase', async () => {
     const deps = makeDeps({ step: 'xyzzy-unknown', max_iterations: 1 });
+    deps.writeHandoff = mock.fn(() => 'handoff');
     const runner = createRunner(deps);
     await runner.run();
     const args = deps.spawn.mock.calls[0].arguments[1];
-    assert(args.some(a => a.includes('pickle-manager')), 'unknown phase should default to pickle-manager');
+    const agentIdx = args.indexOf('--agent');
+    assert(agentIdx >= 0 && args[agentIdx + 1].includes('pickle-manager'), 'unknown phase should default to pickle-manager via --agent');
   });
 });
 
@@ -522,13 +565,20 @@ describe('parallel workers', () => {
     deps.removeWorktree = mock.fn();
     deps.cherryPick = mock.fn();
     deps.getCurrentSha = mock.fn(() => 'abc123');
-    // Each spawn in a worktree should produce a child that exits successfully
     deps.spawn = mock.fn(() => fakeChild(0));
     const runner = createRunner(deps);
     const tickets = ['T-1', 'T-2', 'T-3'];
     const results = await runner.spawnParallelWorkers(tickets, '/base/dir');
     assert.equal(results.length, 3, 'should return results for all tickets');
     assert(deps.createWorktree.mock.callCount() >= 3, 'should create worktree per ticket');
+    // Each parallel spawn should use --agent and -C flags
+    for (const call of deps.spawn.mock.calls) {
+      const args = call.arguments[1];
+      assert(args.includes('--agent'), 'parallel spawn should have --agent');
+      assert(args.includes('-C'), 'parallel spawn should have -C');
+      const agentIdx = args.indexOf('--agent');
+      assert(!args[agentIdx + 1].endsWith('.md'), 'agent should not have .md extension');
+    }
   });
 
   it('parallel-cleanup', async () => {
