@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * spawn-refinement-team.js — Parallel analyst spawner for PRD refinement.
  *
