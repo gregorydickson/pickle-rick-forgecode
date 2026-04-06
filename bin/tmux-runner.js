@@ -104,6 +104,14 @@ export function createRunner(deps, configOverrides = {}) {
       let resolved = false;
       let hangGuardTimer = null;
 
+      child.on('error', (err) => {
+        if (!resolved) {
+          resolved = true;
+          process.stderr.write(`forge spawn error: ${err.message}\n`);
+          resolve({ status: 'error', reason: 'spawn_failed' });
+        }
+      });
+
       child.stderr.on('data', (chunk) => {
         stderrData += chunk.toString();
       });
@@ -224,6 +232,12 @@ export function createRunner(deps, configOverrides = {}) {
           let resolved = false;
           let hangGuardTimer = null;
 
+          child.on('error', (err) => {
+            if (!resolved) {
+              resolved = true;
+              resolve({ ticket, code: 1, signal: null, stderrData: `forge spawn error: ${err.message}`, worktreePath });
+            }
+          });
           child.stderr.on('data', (chunk) => { stderrData += chunk.toString(); });
 
           // Timeout: SIGTERM → SIGKILL escalation (same pattern as serial worker)

@@ -11,6 +11,7 @@ import { spawn as defaultSpawn, execSync as defaultExecSync } from 'node:child_p
 import fs from 'node:fs';
 import path from 'node:path';
 import { StateManager } from '../lib/state-manager.js';
+import { validateSha } from '../lib/git-utils.js';
 
 // ---------------------------------------------------------------------------
 // Agent definitions
@@ -84,6 +85,8 @@ export function getDiffFiles(startSha, deps) {
     process.stderr.write('Warning: missing start_sha, falling back to HEAD~1\n');
     sha = 'HEAD~1';
   }
+  if (/^[0-9a-f]{4,40}$/i.test(sha)) validateSha(sha);
+  else if (!/^HEAD[~^]?\d*$/.test(sha)) throw new Error(`Invalid git ref: ${sha}`);
   const result = exec(`git diff --name-only ${sha}...HEAD`);
   const output = Buffer.isBuffer(result) ? result.toString() : String(result);
   return output.trim().split('\n').filter(Boolean);
@@ -111,6 +114,8 @@ export function measureLlmMetric(metric, deps) {
 export function compareAndRollback(current, previous, preSha, deps) {
   if (current < previous) {
     const exec = deps?.execSync || defaultExecSync;
+    if (/^[0-9a-f]{4,40}$/i.test(preSha)) validateSha(preSha);
+    else if (/[;&|`$(){}]/.test(preSha)) throw new Error(`Unsafe SHA: ${preSha}`);
     exec(`git reset --hard ${preSha}`);
     return { rolled_back: true, reason: 'regression' };
   }
@@ -238,6 +243,8 @@ export async function runMicroverse({ sessionDir, deps, maxIterations }) {
             const stashOut = exec('git stash create');
             stashRef = (Buffer.isBuffer(stashOut) ? stashOut.toString() : String(stashOut)).trim() || null;
           } catch { /* no changes to stash */ }
+          if (/^[0-9a-f]{4,40}$/i.test(preSha)) validateSha(preSha);
+          else if (/[;&|`$(){}]/.test(preSha)) throw new Error(`Unsafe SHA: ${preSha}`);
           exec(`git reset --hard ${preSha}`);
         }
         // Persist stash_ref, failed approach, and stall counter atomically
@@ -333,6 +340,16 @@ function waitForChild(child, timeoutMs, hangGuardMs = 30000) {
         }, 2000);
       }
     }, timeoutMs);
+
+    child.on('error', (err) => {
+      if (!done) {
+        done = true;
+        clearTimeout(timeoutTimer);
+        if (hangGuardTimer) clearTimeout(hangGuardTimer);
+        process.stderr.write(`forge spawn error: ${err.message}\n`);
+        resolve();
+      }
+    });
 
     child.on('exit', () => {
       done = true;

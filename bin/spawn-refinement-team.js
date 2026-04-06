@@ -133,6 +133,10 @@ function spawnWorker(deps, role, cycle, prompt) {
       }, killEscalationMs);
     }, workerTimeoutMs);
 
+    child.on('error', (err) => {
+      finish({ role, success: false, error: `spawn error: ${err.message}` });
+    });
+
     child.stderr?.on('data', (data) => {
       stderrBuf += data.toString();
     });
