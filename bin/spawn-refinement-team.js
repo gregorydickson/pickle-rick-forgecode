@@ -8,6 +8,8 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
+import { parseArgs } from 'node:util';
 import { parseAutoDump } from '../lib/token-parser.js';
 
 export const WORKER_ROLES = ['requirements', 'codebase', 'risk-scope'];
@@ -19,6 +21,62 @@ export const ROLE_AGENTS = {
 };
 
 const CRITICAL_ROLES = new Set(['requirements', 'codebase']);
+
+// ---------------------------------------------------------------------------
+// CLI arg parsing
+// ---------------------------------------------------------------------------
+export function parseRefinementArgs(argv) {
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      prd: { type: 'string' },
+      'session-dir': { type: 'string' },
+      timeout: { type: 'string', default: '300000' },
+      cycles: { type: 'string', default: '3' },
+      'max-turns': { type: 'string' },
+    },
+    strict: false,
+  });
+
+  return {
+    prd: values.prd,
+    sessionDir: values['session-dir'],
+    timeout: parseInt(values.timeout, 10),
+    cycles: parseInt(values.cycles, 10),
+    maxTurns: values['max-turns'] ? parseInt(values['max-turns'], 10) : undefined,
+  };
+}
+
+export function validateRefinementArgs(args) {
+  if (!args.prd) return 'Error: --prd is required';
+  if (!args.sessionDir) return 'Error: --session-dir is required';
+  try {
+    fs.accessSync(args.prd, fs.constants.R_OK);
+  } catch {
+    return `Error: PRD file not found: ${args.prd}`;
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Temp file management
+// ---------------------------------------------------------------------------
+export function writePromptFile(content, dir) {
+  const id = crypto.randomBytes(8).toString('hex');
+  const filePath = path.join(dir, `prompt_${id}.txt`);
+  fs.writeFileSync(filePath, content);
+  return filePath;
+}
+
+export function cleanupTempFiles(paths) {
+  for (const p of paths) {
+    try {
+      fs.unlinkSync(p);
+    } catch (err) {
+      if (err.code !== 'ENOENT') throw err;
+    }
+  }
+}
 
 function countFindings(content) {
   const p0 = (content.match(/\[P0\]/g) || []).length;
@@ -39,11 +97,20 @@ function readAgentModel(agentDir, agentName) {
 }
 
 function spawnWorker(deps, role, cycle, prompt) {
-  const { spawn, refinementDir, workerTimeoutMs = 300000, killEscalationMs = 30000, agentDir } = deps;
+  const { spawn, refinementDir, workerTimeoutMs = 300000, killEscalationMs = 30000, agentDir, usePromptFile } = deps;
 
   return new Promise((resolve) => {
     const agentName = ROLE_AGENTS[role];
-    const args = ['-p', prompt, '--agent', agentName, '-C', refinementDir];
+    let promptFilePath;
+    let args;
+
+    if (usePromptFile) {
+      promptFilePath = writePromptFile(prompt, refinementDir);
+      args = ['--prompt-file', promptFilePath, '--agent', agentName, '-C', refinementDir];
+    } else {
+      args = ['-p', prompt, '--agent', agentName, '-C', refinementDir];
+    }
+
     const child = spawn('forge', args, {});
 
     let stderrBuf = '';
@@ -73,6 +140,8 @@ function spawnWorker(deps, role, cycle, prompt) {
     child.on('exit', (code) => {
       clearTimeout(termTimer);
       clearTimeout(killTimer);
+
+      if (promptFilePath) cleanupTempFiles([promptFilePath]);
 
       const analysisPath = path.join(refinementDir, `analysis_${role}.md`);
       const dumpPath = path.join(refinementDir, `worker_${role}_c${cycle}_dump.json`);
@@ -196,4 +265,45 @@ export async function spawnRefinementTeam(deps) {
     early_exit: earlyExit,
     exit_reason: exitReason,
   };
+}
+
+// ---------------------------------------------------------------------------
+// CLI entry
+// ---------------------------------------------------------------------------
+async function main() {
+  const args = parseRefinementArgs(process.argv.slice(2));
+
+  const err = validateRefinementArgs(args);
+  if (err) {
+    process.stderr.write(`${err}\n`);
+    process.exit(1);
+  }
+
+  const { spawn: nodeSpawn } = await import('node:child_process');
+  const refinementDir = path.join(args.sessionDir, 'refinement');
+
+  const result = await spawnRefinementTeam({
+    spawn: nodeSpawn,
+    prdPath: args.prd,
+    refinementDir,
+    cycles: args.cycles,
+    workerTimeoutMs: args.timeout,
+    maxTurns: args.maxTurns,
+    agentDir: path.join(process.cwd(), '.forge', 'agents'),
+    usePromptFile: true,
+  });
+
+  if (!result.all_success) {
+    process.stderr.write('Refinement failed: not all critical workers succeeded\n');
+    process.exit(2);
+  }
+
+  process.stdout.write(JSON.stringify(result.manifest, null, 2) + '\n');
+}
+
+if (process.argv[1]?.endsWith('spawn-refinement-team.js')) {
+  main().catch((err) => {
+    process.stderr.write(`${err.message}\n`);
+    process.exit(2);
+  });
 }
