@@ -822,3 +822,21 @@ describe('WORKER_ROLES export', () => {
     assert(WORKER_ROLES.includes('risk-scope'));
   });
 });
+
+// ---------------------------------------------------------------------------
+// agentDir defaults to .forge/agents when undefined
+// ---------------------------------------------------------------------------
+describe('agent-dir-default', () => {
+  it('defaults agentDir to .forge/agents when not provided', async () => {
+    // Write agent defs at the default location: .forge/agents relative to refinementDir parent
+    const defaultAgentDir = path.join(tmpDir, '.forge', 'agents');
+    writeAgentDefs(defaultAgentDir);
+    const deps = makeDeps({ cycles: 1 });
+    delete deps.agentDir;
+    const result = await spawnRefinementTeam(deps);
+    assert(result, 'should complete without throwing');
+    // Verify model was resolved from the default path
+    const reqWorker = result.workers.find(w => w.role === 'requirements');
+    assert.equal(reqWorker.model, 'anthropic/claude-sonnet-4-6', 'should resolve model from default .forge/agents dir');
+  });
+});

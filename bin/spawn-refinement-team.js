@@ -97,7 +97,7 @@ function readAgentModel(agentDir, agentName) {
 }
 
 function spawnWorker(deps, role, cycle, prompt) {
-  const { spawn, refinementDir, workerTimeoutMs = 300000, killEscalationMs = 30000, agentDir, usePromptFile } = deps;
+  const { spawn, refinementDir, workerTimeoutMs = 300000, killEscalationMs = 30000, agentDir = path.join(refinementDir, '..', '.forge', 'agents'), usePromptFile } = deps;
 
   return new Promise((resolve) => {
     const agentName = ROLE_AGENTS[role];

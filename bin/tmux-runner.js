@@ -33,7 +33,7 @@ export const DEFAULT_CONFIG = {
   workerTimeoutMs: 10 * 60 * 1000,
   killEscalationMs: 5000,
   hangGuardMs: 30000,
-  rateLimitBackoffMs: 100,
+  rateLimitBackoffMs: 30000,
 };
 
 const COMPLETION_TOKENS = ['I AM DONE', 'EPIC_COMPLETED', 'EXISTENCE_IS_PAIN', 'ANALYSIS_DONE'];
@@ -87,6 +87,8 @@ export function createRunner(deps, configOverrides = {}) {
       ticketsDone: doneTickets,
       ticketsPending: pendingTickets,
       startTime: state.start_time_epoch,
+      timeElapsed: state.start_time_epoch ? Date.now() - state.start_time_epoch : undefined,
+      instructions: state.instructions,
       sha,
     });
 
@@ -302,8 +304,6 @@ async function main() {
     removeWorktree: defaultRemoveWorktree,
     cherryPick: defaultCherryPick,
     statePath,
-  }, {
-    rateLimitBackoffMs: 30000,
   });
 
   process.on('SIGTERM', () => runner.shutdown());

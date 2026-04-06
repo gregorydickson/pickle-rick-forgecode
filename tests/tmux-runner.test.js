@@ -737,3 +737,55 @@ describe('robust worktree cleanup', () => {
     assert.equal(results[0].code, 0, 'Worker result should be preserved despite cleanup failure');
   });
 });
+
+// ---------------------------------------------------------------------------
+// 21. Handoff includes timeElapsed
+// ---------------------------------------------------------------------------
+describe('handoff elapsed time', () => {
+  it('passes timeElapsed to writeHandoff opts', async () => {
+    const startTime = Date.now() - 120000; // 2 minutes ago
+    const deps = makeDeps({
+      max_iterations: 1,
+      start_time_epoch: startTime,
+    });
+    const runner = createRunner(deps);
+    await runner.run();
+    const opts = deps.writeHandoff.mock.calls[0].arguments[1];
+    assert(opts.timeElapsed !== undefined, 'should include timeElapsed');
+    assert(typeof opts.timeElapsed === 'number', 'timeElapsed should be a number');
+    assert(opts.timeElapsed >= 120000, 'timeElapsed should be >= 120000ms');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 22. Handoff includes instructions
+// ---------------------------------------------------------------------------
+describe('handoff instructions', () => {
+  it('passes instructions from state to writeHandoff opts', async () => {
+    const deps = makeDeps({
+      max_iterations: 1,
+      instructions: 'Focus on error handling paths',
+    });
+    const runner = createRunner(deps);
+    await runner.run();
+    const opts = deps.writeHandoff.mock.calls[0].arguments[1];
+    assert.equal(opts.instructions, 'Focus on error handling paths', 'should forward state.instructions');
+  });
+
+  it('omits instructions when state has none', async () => {
+    const deps = makeDeps({ max_iterations: 1 });
+    const runner = createRunner(deps);
+    await runner.run();
+    const opts = deps.writeHandoff.mock.calls[0].arguments[1];
+    assert.equal(opts.instructions, undefined, 'should not include instructions when absent');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 23. Rate limit default is 30000ms
+// ---------------------------------------------------------------------------
+describe('rate limit default', () => {
+  it('DEFAULT_CONFIG.rateLimitBackoffMs is 30000', () => {
+    assert.equal(DEFAULT_CONFIG.rateLimitBackoffMs, 30000, 'rateLimitBackoffMs should default to 30000ms');
+  });
+});
