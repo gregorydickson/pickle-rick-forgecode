@@ -1,6 +1,16 @@
 {
   "name": "pickle-rick-forgecode",
   "version": "0.1.0",
+  "description": "Pickle Rick autonomous engineering lifecycle — ForgeCode native port",
   "type": "module",
-  "private": true
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "test:smoke": "bash tests/smoke/platform-verification.sh && bash tests/smoke/tmux-layout.sh runner",
+    "setup": "node bin/setup.js",
+    "install:pickle": "bash install.sh"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
 }
