@@ -59,6 +59,16 @@ function hangingChild() {
   return child;
 }
 
+function unkillableChild() {
+  const child = new EventEmitter();
+  child.pid = 66666;
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.killed = false;
+  child.kill = mock.fn(() => {}); // ignores ALL signals, never emits exit
+  return child;
+}
+
 function makeMockState(overrides = {}) {
   return {
     schema_version: 1,
@@ -338,6 +348,18 @@ describe('timeout', () => {
 
     const killCalls = child.kill.mock.calls;
     assert.ok(killCalls.length >= 1, 'should send at least SIGTERM');
+  });
+
+  it('resolves when SIGKILL fails (hang guard)', async () => {
+    const child = unkillableChild();
+    const deps = makeMockDeps({ max_iterations: 1 });
+    deps.spawn = mock.fn(() => child);
+    deps.timeoutMs = 50;
+    deps.hangGuardMs = 80;
+
+    await runMicroverse({ sessionDir: tmpDir, deps });
+    // If we get here, the hang guard resolved the promise
+    assert.ok(true, 'hang guard should resolve the promise');
   });
 });
 

@@ -135,6 +135,7 @@ export async function runMicroverse({ sessionDir, deps, maxIterations }) {
   const exec = deps.execSync || defaultExecSync;
   const measure = deps.measureMetric || ((metric) => measureMetric(metric, deps));
   const timeoutMs = deps.timeoutMs ?? 10 * 60 * 1000;
+  const hangGuardMs = deps.hangGuardMs ?? 30000;
   const maxIter = maxIterations ?? state.max_iterations ?? 10;
 
   let shuttingDown = false;
@@ -153,7 +154,7 @@ export async function runMicroverse({ sessionDir, deps, maxIterations }) {
         cwd: sessionDir,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
-      await waitForChild(child, timeoutMs);
+      await waitForChild(child, timeoutMs, hangGuardMs);
       sm.update(null, (s) => { s.status = 'running'; });
     }
 
@@ -208,7 +209,7 @@ export async function runMicroverse({ sessionDir, deps, maxIterations }) {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
 
-      await waitForChild(child, timeoutMs);
+      await waitForChild(child, timeoutMs, hangGuardMs);
 
       if (shuttingDown) break;
 
@@ -305,9 +306,10 @@ export async function runMicroverse({ sessionDir, deps, maxIterations }) {
 // ---------------------------------------------------------------------------
 // Wait for child process with timeout
 // ---------------------------------------------------------------------------
-function waitForChild(child, timeoutMs) {
+function waitForChild(child, timeoutMs, hangGuardMs = 30000) {
   return new Promise((resolve) => {
     let done = false;
+    let hangGuardTimer = null;
 
     const timeoutTimer = setTimeout(() => {
       if (!done && !child.killed) {
@@ -316,6 +318,15 @@ function waitForChild(child, timeoutMs) {
           if (!done && !child.killed) {
             child.kill('SIGKILL');
           }
+          // Hang guard: if SIGKILL doesn't terminate, force-resolve
+          hangGuardTimer = setTimeout(() => {
+            if (!done) {
+              done = true;
+              clearTimeout(timeoutTimer);
+              resolve();
+            }
+          }, hangGuardMs);
+          hangGuardTimer.unref();
         }, 2000);
       }
     }, timeoutMs);
@@ -323,6 +334,7 @@ function waitForChild(child, timeoutMs) {
     child.on('exit', () => {
       done = true;
       clearTimeout(timeoutTimer);
+      if (hangGuardTimer) clearTimeout(hangGuardTimer);
       resolve();
     });
   });

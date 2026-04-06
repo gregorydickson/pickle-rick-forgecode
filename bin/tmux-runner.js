@@ -32,6 +32,7 @@ export const DEFAULT_AGENT = 'pickle-manager';
 export const DEFAULT_CONFIG = {
   workerTimeoutMs: 10 * 60 * 1000,
   killEscalationMs: 5000,
+  hangGuardMs: 30000,
   rateLimitBackoffMs: 100,
 };
 
@@ -98,6 +99,8 @@ export function createRunner(deps, configOverrides = {}) {
 
     return new Promise((resolve) => {
       let stderrData = '';
+      let resolved = false;
+      let hangGuardTimer = null;
 
       child.stderr.on('data', (chunk) => {
         stderrData += chunk.toString();
@@ -113,12 +116,24 @@ export function createRunner(deps, configOverrides = {}) {
             if (!child.killed) {
               child.kill('SIGKILL');
             }
+            // Hang guard: if SIGKILL doesn't terminate, force-resolve
+            hangGuardTimer = setTimeout(() => {
+              if (!resolved) {
+                resolved = true;
+                _currentChild = null;
+                resolve({ code: null, signal: 'SIGKILL', stderrData: stderrData + '\n[hang-guard] process did not exit after SIGKILL' });
+              }
+            }, config.hangGuardMs);
+            hangGuardTimer.unref();
           }, config.killEscalationMs);
         }
       }, config.workerTimeoutMs);
 
       child.on('exit', (code, signal) => {
+        if (resolved) return;
+        resolved = true;
         clearTimeout(timeoutTimer);
+        if (hangGuardTimer) clearTimeout(hangGuardTimer);
         _currentChild = null;
         resolve({ code, signal, stderrData });
       });

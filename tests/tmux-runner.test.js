@@ -36,6 +36,16 @@ function hangingChild() {
   return child;
 }
 
+function unkillableChild() {
+  const child = new EventEmitter();
+  child.pid = 66666;
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.killed = false;
+  child.kill = mock.fn(() => {}); // ignores ALL signals, never emits exit
+  return child;
+}
+
 /**
  * Create deps with a shared mutable state object.
  * read() returns a copy, update() mutates the shared state —
@@ -363,6 +373,16 @@ describe('worker timeout', () => {
     const signals = child.kill.mock.calls.map(c => c.arguments[0]);
     assert(signals.includes('SIGTERM'), 'Should send SIGTERM');
     assert(signals.includes('SIGKILL'), 'Should escalate to SIGKILL');
+  });
+
+  it('resolves with error status when SIGKILL fails (hang guard)', async () => {
+    const deps = makeDeps({ max_iterations: 1 });
+    const child = unkillableChild();
+    deps.spawn = mock.fn(() => child);
+    const runner = createRunner(deps, { workerTimeoutMs: 50, killEscalationMs: 30, hangGuardMs: 80 });
+    await runner.run();
+    // If we get here, the hang guard resolved the promise (didn't hang forever)
+    assert.ok(true, 'hang guard should resolve the promise');
   });
 });
 
