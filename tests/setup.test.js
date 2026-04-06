@@ -112,11 +112,11 @@ describe('createSession', () => {
     const state = readJSON(path.join(sessionRoot, 'state.json'));
 
     assert.equal(state.schema_version, 1);
-    assert.equal(state.active, true);
+    assert.equal(state.active, false);
     assert.equal(typeof state.pid, 'number');
     assert.equal(state.iteration, 0);
     assert.equal(state.max_iterations, 50);
-    assert.equal(state.step, 'research');
+    assert.equal(state.step, 'prd');
     assert.equal(state.working_dir, process.cwd());
     assert.equal(state.start_time_epoch > 0, true);
     assert.equal(state.max_time_minutes, 360);
@@ -125,6 +125,8 @@ describe('createSession', () => {
     assert.equal(state.tmux_mode, true);
     assert.equal(state.worker_timeout_sec, 600);
     assert.equal(state.task, 'test task');
+    assert.deepEqual(state.tickets, []);
+    assert.equal(state.auto_dump_path, path.join(sessionRoot, 'auto_dump.json'));
   });
 
   it('returns the session root path', () => {
@@ -195,7 +197,7 @@ describe('resetSession', () => {
     const result = resetSession(sessionDir);
     assert.equal(result.iteration, 0);
     assert.equal(result.active, true);
-    assert.equal(result.step, 'research');
+    assert.equal(result.step, 'prd');
     // Preserves non-reset fields
     assert.equal(result.max_iterations, 100);
     assert.equal(result.task, 'original task');
@@ -222,6 +224,6 @@ describe('resetSession', () => {
     const ondisk = readJSON(path.join(sessionDir, 'state.json'));
     assert.equal(ondisk.iteration, 0);
     assert.equal(ondisk.active, true);
-    assert.equal(ondisk.step, 'research');
+    assert.equal(ondisk.step, 'prd');
   });
 });

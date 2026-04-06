@@ -52,20 +52,22 @@ export function createSession(args, root) {
 
   const state = {
     schema_version: 1,
-    active: true,
+    active: false,
     pid: process.pid,
     iteration: 0,
     max_iterations: args.maxIterations,
-    step: 'research',
+    step: 'prd',
     working_dir: process.cwd(),
     current_ticket: null,
     start_time_epoch: Date.now(),
     max_time_minutes: args.maxTime,
     history: [],
+    tickets: [],
     session_dir: sessionRoot,
     tmux_mode: args.tmux,
     worker_timeout_sec: args.workerTimeout,
     task: args.task,
+    auto_dump_path: path.join(sessionRoot, 'auto_dump.json'),
   };
 
   fs.writeFileSync(path.join(sessionRoot, 'state.json'), JSON.stringify(state, null, 2));
@@ -94,7 +96,7 @@ export function resetSession(sessionDir) {
   const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
   state.iteration = 0;
   state.active = true;
-  state.step = 'research';
+  state.step = 'prd';
   state.start_time_epoch = Date.now();
   state.pid = process.pid;
   fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
