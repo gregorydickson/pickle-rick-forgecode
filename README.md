@@ -144,7 +144,7 @@ The installer deploys agent definitions to `.forge/agents/`, skills to `.forge/s
 Ensure `auto_dump = "json"` is set in your `forge.toml` -- this is how the orchestrator detects promise tokens and filters assistant output from tool results.
 
 ```toml
-# forge.toml (project root or ~/.config/forge/forge.toml)
+# ~/forge/.forge.toml (ForgeCode global config)
 auto_dump = "json"
 ```
 
@@ -245,7 +245,7 @@ Queue tasks for unattended batch execution overnight.
 
 ## Command Reference
 
-Commands are defined in `.forge/skills/*/SKILL.md` and `.forge/commands/*.md`.
+Commands are defined as skills in `.forge/skills/*/SKILL.md`.
 
 | Command | Description |
 |---|---|

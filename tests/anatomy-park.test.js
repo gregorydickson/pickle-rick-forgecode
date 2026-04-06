@@ -76,9 +76,9 @@ function makeMockForge(phaseResults = {}) {
 function makeMockGit() {
   return {
     stash: mock.fn(),
-    resetHard: mock.fn(),
-    commit: mock.fn(),
-    getHeadSha: mock.fn(() => 'abc1234'),
+    resetToSha: mock.fn(),
+    autoCommit: mock.fn(),
+    getCurrentSha: mock.fn(() => 'abc1234'),
   };
 }
 
@@ -279,7 +279,7 @@ describe('phase3-rollback', () => {
     });
 
     assert.ok(git.stash.mock.callCount() > 0, 'should call git stash on FAIL');
-    assert.ok(git.resetHard.mock.callCount() > 0, 'should call git reset --hard on FAIL');
+    assert.ok(git.resetToSha.mock.callCount() > 0, 'should call git reset --hard on FAIL');
   });
 
   it('rollbackPhase3 performs stash then reset to pre-SHA', () => {
@@ -289,10 +289,10 @@ describe('phase3-rollback', () => {
     rollbackPhase3({ git, preSha });
 
     assert.ok(git.stash.mock.callCount() === 1, 'stash called once');
-    assert.ok(git.resetHard.mock.callCount() === 1, 'resetHard called once');
+    assert.ok(git.resetToSha.mock.callCount() === 1, 'resetToSha called once');
     assert.equal(
-      git.resetHard.mock.calls[0].arguments[0], preSha,
-      'resetHard should target pre-SHA'
+      git.resetToSha.mock.calls[0].arguments[0], preSha,
+      'resetToSha should target pre-SHA'
     );
   });
 
@@ -382,7 +382,7 @@ describe('full-convergence', () => {
     });
 
     assert.equal(state.status, 'converged', 'status should be converged');
-    assert.ok(git.commit.mock.callCount() > 0, 'should commit on full convergence');
+    assert.ok(git.autoCommit.mock.callCount() > 0, 'should commit on full convergence');
   });
 
   it('isFullyConverged returns true when all subsystems are converged or stalled', () => {

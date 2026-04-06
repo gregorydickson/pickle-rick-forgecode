@@ -146,6 +146,7 @@ export async function runMicroverse({ sessionDir, deps, maxIterations }) {
     sm.forceWrite();
   };
   process.on('SIGTERM', sigHandler);
+  process.on('SIGINT', sigHandler);
 
   try {
     // Gap analysis phase — spawn analyst first
@@ -301,6 +302,7 @@ export async function runMicroverse({ sessionDir, deps, maxIterations }) {
     }
   } finally {
     process.removeListener('SIGTERM', sigHandler);
+    process.removeListener('SIGINT', sigHandler);
   }
 }
 

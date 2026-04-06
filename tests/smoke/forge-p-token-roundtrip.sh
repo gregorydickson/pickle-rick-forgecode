@@ -18,7 +18,7 @@ if ! command -v forge &>/dev/null; then
 fi
 
 # --- auto_dump config check ---
-FORGE_TOML="$HOME/.forge/.forge.toml"
+FORGE_TOML="$HOME/forge/.forge.toml"
 if [ ! -f "$FORGE_TOML" ]; then
   echo "SKIP: $FORGE_TOML not found (auto_dump config required)"
   exit 0
