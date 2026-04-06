@@ -6,37 +6,47 @@ echo "🥒 Installing Pickle Rick for ForgeCode..."
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET_DIR="${1:-$(pwd)}"
 
+# Skip copy if source = target (self-install)
+if [ "$SCRIPT_DIR" = "$TARGET_DIR" ]; then
+  SELF_INSTALL=true
+else
+  SELF_INSTALL=false
+fi
+
 # Verify forge is installed
 if ! command -v forge &>/dev/null; then
   echo "❌ ForgeCode CLI not found. Install from: https://forgecode.dev"
   exit 1
 fi
 
-# Copy agent definitions
-echo "📦 Installing agent definitions..."
-mkdir -p "$TARGET_DIR/.forge/agents"
-cp -r "$SCRIPT_DIR/.forge/agents/"*.md "$TARGET_DIR/.forge/agents/" 2>/dev/null || true
-# Exclude spike test fixtures
-rm -f "$TARGET_DIR/.forge/agents/spike-"*.md 2>/dev/null || true
+if [ "$SELF_INSTALL" = false ]; then
+  # Copy agent definitions
+  echo "📦 Installing agent definitions..."
+  mkdir -p "$TARGET_DIR/.forge/agents"
+  cp -r "$SCRIPT_DIR/.forge/agents/"*.md "$TARGET_DIR/.forge/agents/" 2>/dev/null || true
+  rm -f "$TARGET_DIR/.forge/agents/spike-"*.md 2>/dev/null || true
 
-# Copy skills
-echo "📦 Installing skills..."
-mkdir -p "$TARGET_DIR/.forge/skills"
-cp -r "$SCRIPT_DIR/.forge/skills/"* "$TARGET_DIR/.forge/skills/"
+  # Copy skills
+  echo "📦 Installing skills..."
+  mkdir -p "$TARGET_DIR/.forge/skills"
+  cp -r "$SCRIPT_DIR/.forge/skills/"* "$TARGET_DIR/.forge/skills/"
 
-# Copy AGENTS.md (persona)
-echo "📦 Installing persona..."
-cp "$SCRIPT_DIR/.forge/AGENTS.md" "$TARGET_DIR/.forge/AGENTS.md"
+  # Copy AGENTS.md (persona)
+  echo "📦 Installing persona..."
+  cp "$SCRIPT_DIR/.forge/AGENTS.md" "$TARGET_DIR/.forge/AGENTS.md"
 
-# Copy bin scripts
-echo "📦 Installing orchestration scripts..."
-mkdir -p "$TARGET_DIR/bin"
-cp "$SCRIPT_DIR/bin/"*.js "$TARGET_DIR/bin/"
+  # Copy bin scripts
+  echo "📦 Installing orchestration scripts..."
+  mkdir -p "$TARGET_DIR/bin"
+  cp "$SCRIPT_DIR/bin/"*.js "$TARGET_DIR/bin/"
 
-# Copy lib modules
-echo "📦 Installing lib modules..."
-mkdir -p "$TARGET_DIR/lib"
-cp "$SCRIPT_DIR/lib/"*.js "$TARGET_DIR/lib/"
+  # Copy lib modules
+  echo "📦 Installing lib modules..."
+  mkdir -p "$TARGET_DIR/lib"
+  cp "$SCRIPT_DIR/lib/"*.js "$TARGET_DIR/lib/"
+else
+  echo "ℹ️  Source = target — skipping file copy (self-install)"
+fi
 
 # Enable auto_dump in forge config
 FORGE_CONFIG="$HOME/forge/.forge.toml"
