@@ -157,6 +157,9 @@ export async function runMicroverse({ sessionDir, deps, maxIterations }) {
       sm.update(null, (s) => { s.status = 'running'; });
     }
 
+    // Preflight — auto-commit dirty tree before capturing SHA
+    preflight({ workingDir: sessionDir, deps: { execSync: exec } });
+
     // Capture pre-SHA
     let preSha;
     try {
@@ -164,7 +167,10 @@ export async function runMicroverse({ sessionDir, deps, maxIterations }) {
       preSha = (Buffer.isBuffer(result) ? result.toString() : String(result)).trim();
     } catch { preSha = null; }
 
-    let bestScore = state.baseline_score ?? 0;
+    // Baseline measurement — measure actual metric, not stale state value
+    const baselineScore = measure(state.key_metric);
+    sm.update(null, (s) => { s.baseline_score = baselineScore; });
+    let bestScore = baselineScore;
 
     // Main iteration loop
     for (let i = 0; i < maxIter; i++) {
@@ -216,37 +222,48 @@ export async function runMicroverse({ sessionDir, deps, maxIterations }) {
         score = measure(state.key_metric);
       }
 
-      // Record in history
-      const convergence = state.convergence || {};
-      if (!convergence.history) convergence.history = [];
-      convergence.history.push(score);
-      state.convergence = convergence;
-
       // Compare and rollback — direction-aware
       const isRegression = direction === 'lower'
         ? score > bestScore
         : score < bestScore;
 
       if (isRegression) {
-        // Regression — rollback
+        // Regression — stash before rollback
+        let stashRef = null;
         if (preSha) {
+          try {
+            const stashOut = exec('git stash create');
+            stashRef = (Buffer.isBuffer(stashOut) ? stashOut.toString() : String(stashOut)).trim() || null;
+          } catch { /* no changes to stash */ }
           exec(`git reset --hard ${preSha}`);
         }
-        // Record failed approach
-        if (!state.failed_approaches) state.failed_approaches = [];
-        state.failed_approaches.push(`iteration-${i}-score-${score}`);
-        if (state.failed_approaches.length > 100) {
-          state.failed_approaches = state.failed_approaches.slice(-100);
-        }
-        // Increment stall counter
-        convergence.stall_counter = (convergence.stall_counter || 0) + 1;
+        // Persist stash_ref, failed approach, and stall counter atomically
+        sm.update(null, (s) => {
+          if (stashRef) s.stash_ref = stashRef;
+          if (!s.failed_approaches) s.failed_approaches = [];
+          s.failed_approaches.push(`iteration-${i}-score-${score}`);
+          if (s.failed_approaches.length > 100) {
+            s.failed_approaches = s.failed_approaches.slice(-100);
+          }
+          const c = s.convergence || {};
+          c.stall_counter = (c.stall_counter || 0) + 1;
+          s.convergence = c;
+        });
       } else if (score === bestScore) {
-        // Stall
-        convergence.stall_counter = (convergence.stall_counter || 0) + 1;
+        // Stall — persist stall counter
+        sm.update(null, (s) => {
+          const c = s.convergence || {};
+          c.stall_counter = (c.stall_counter || 0) + 1;
+          s.convergence = c;
+        });
       } else {
-        // Improvement
+        // Improvement — reset stall counter
         bestScore = score;
-        convergence.stall_counter = 0;
+        sm.update(null, (s) => {
+          const c = s.convergence || {};
+          c.stall_counter = 0;
+          s.convergence = c;
+        });
         // Update pre-SHA to current
         try {
           const result = exec('git rev-parse HEAD');
@@ -254,8 +271,14 @@ export async function runMicroverse({ sessionDir, deps, maxIterations }) {
         } catch { /* keep old preSha */ }
       }
 
-      // Update state
-      sm.update(null, (s) => { s.iteration = i + 1; });
+      // Persist iteration count and score history
+      sm.update(null, (s) => {
+        s.iteration = i + 1;
+        const c = s.convergence || {};
+        if (!c.history) c.history = [];
+        c.history.push(score);
+        s.convergence = c;
+      });
 
       // Check convergence target — direction-aware
       const targetReached = direction === 'lower'

@@ -205,9 +205,15 @@ describe('rollback', () => {
     const preSha = 'abc1234';
     deps.execSync = mock.fn((cmd) => {
       if (typeof cmd === 'string' && cmd.includes('rev-parse')) return Buffer.from(preSha);
+      if (typeof cmd === 'string' && cmd.includes('status --porcelain')) return Buffer.from('');
+      if (typeof cmd === 'string' && cmd.includes('stash create')) return Buffer.from('stash-ref\n');
       return Buffer.from('');
     });
-    deps.measureMetric = mock.fn(() => 40); // worse than baseline 50
+    let callCount = 0;
+    deps.measureMetric = mock.fn(() => {
+      callCount++;
+      return callCount === 1 ? 50 : 40; // baseline=50, iteration=40 (regression)
+    });
     await runMicroverse({ sessionDir: tmpDir, deps, maxIterations: 1 });
     const resetCalls = deps.execSync.mock.calls.filter(
       c => typeof c.arguments[0] === 'string' && c.arguments[0].includes('git reset --hard')
@@ -563,5 +569,173 @@ describe('llm-judge-failure', () => {
       stderrLines.some(l => l.includes('failed after 2 attempts')),
       'should log warning about failure'
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 20. git-stash-before-reset — stash create before git reset --hard
+// ---------------------------------------------------------------------------
+describe('git-stash-before-reset', () => {
+  it('calls git stash create before git reset --hard on regression', async () => {
+    const preSha = 'abc1234';
+    const cmdOrder = [];
+    const deps = makeMockDeps({ baseline_score: 50 });
+    deps.execSync = mock.fn((cmd) => {
+      if (typeof cmd === 'string') {
+        if (cmd.includes('rev-parse')) return Buffer.from(preSha);
+        if (cmd.includes('stash create')) { cmdOrder.push('stash'); return Buffer.from('stash-ref-abc\n'); }
+        if (cmd.includes('reset --hard')) { cmdOrder.push('reset'); return Buffer.from(''); }
+        if (cmd.includes('status --porcelain')) return Buffer.from('');
+      }
+      return Buffer.from('');
+    });
+    let callCount = 0;
+    deps.measureMetric = mock.fn(() => { callCount++; return callCount === 1 ? 50 : 40; }); // baseline=50, iter=40
+    await runMicroverse({ sessionDir: tmpDir, deps, maxIterations: 1 });
+    const stashIdx = cmdOrder.indexOf('stash');
+    const resetIdx = cmdOrder.indexOf('reset');
+    assert.ok(stashIdx >= 0, 'should call git stash create');
+    assert.ok(resetIdx >= 0, 'should call git reset --hard');
+    assert.ok(stashIdx < resetIdx, 'stash must come before reset');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 21. stash-ref-persisted — stash_ref saved in state via sm.update
+// ---------------------------------------------------------------------------
+describe('stash-ref-persisted', () => {
+  it('persists stash_ref in state after stash on regression', async () => {
+    const preSha = 'abc1234';
+    const deps = makeMockDeps({ baseline_score: 50 });
+    deps.execSync = mock.fn((cmd) => {
+      if (typeof cmd === 'string') {
+        if (cmd.includes('rev-parse')) return Buffer.from(preSha);
+        if (cmd.includes('stash create')) return Buffer.from('stash-ref-xyz\n');
+        if (cmd.includes('status --porcelain')) return Buffer.from('');
+      }
+      return Buffer.from('');
+    });
+    let callCount = 0;
+    deps.measureMetric = mock.fn(() => { callCount++; return callCount === 1 ? 50 : 40; }); // baseline=50, iter=40
+    await runMicroverse({ sessionDir: tmpDir, deps, maxIterations: 1 });
+    const updateCalls = deps.stateManager.update.mock.calls;
+    const stashUpdate = updateCalls.find(c => {
+      const testState = { ...makeMockState() };
+      c.arguments[1](testState);
+      return testState.stash_ref != null;
+    });
+    assert.ok(stashUpdate, 'sm.update should be called with stash_ref');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 22. preflight-called — preflight runs in runMicroverse before pre-SHA
+// ---------------------------------------------------------------------------
+describe('preflight-called-in-loop', () => {
+  it('calls preflight (git status + git add + git commit) before capturing pre-SHA', async () => {
+    const cmdOrder = [];
+    const deps = makeMockDeps({ max_iterations: 1 });
+    deps.execSync = mock.fn((cmd) => {
+      if (typeof cmd === 'string') {
+        if (cmd.includes('status --porcelain')) { cmdOrder.push('status'); return Buffer.from('M dirty.js\n'); }
+        if (cmd.includes('git add')) { cmdOrder.push('add'); return Buffer.from(''); }
+        if (cmd.includes('git commit')) { cmdOrder.push('commit'); return Buffer.from(''); }
+        if (cmd.includes('rev-parse')) { cmdOrder.push('rev-parse'); return Buffer.from('sha123'); }
+      }
+      return Buffer.from('75');
+    });
+    await runMicroverse({ sessionDir: tmpDir, deps, maxIterations: 1 });
+    const commitIdx = cmdOrder.indexOf('commit');
+    const revParseIdx = cmdOrder.indexOf('rev-parse');
+    assert.ok(commitIdx >= 0, 'preflight should auto-commit dirty tree');
+    assert.ok(revParseIdx >= 0, 'should capture pre-SHA');
+    assert.ok(commitIdx < revParseIdx, 'commit must come before rev-parse');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 23. baseline-measurement — measure metric at start, persist baseline_score
+// ---------------------------------------------------------------------------
+describe('baseline-measurement', () => {
+  it('measures metric at start and persists baseline_score', async () => {
+    const deps = makeMockDeps({ baseline_score: 0, max_iterations: 1 });
+    let measureCallCount = 0;
+    deps.measureMetric = mock.fn(() => {
+      measureCallCount++;
+      return 65;
+    });
+    await runMicroverse({ sessionDir: tmpDir, deps, maxIterations: 1 });
+    assert.ok(measureCallCount >= 2, 'measureMetric should be called for baseline + iteration');
+    const updateCalls = deps.stateManager.update.mock.calls;
+    const baselineUpdate = updateCalls.find(c => {
+      const testState = {};
+      c.arguments[1](testState);
+      return testState.baseline_score === 65;
+    });
+    assert.ok(baselineUpdate, 'sm.update should persist baseline_score');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 24. state-persisted-each-iteration — sm.update with convergence data
+// ---------------------------------------------------------------------------
+describe('state-persisted-each-iteration', () => {
+  it('persists convergence history via sm.update each iteration', async () => {
+    const deps = makeMockDeps({ max_iterations: 2, baseline_score: 50 });
+    deps.measureMetric = mock.fn(() => 55);
+    await runMicroverse({ sessionDir: tmpDir, deps, maxIterations: 2 });
+    const updateCalls = deps.stateManager.update.mock.calls;
+    const historyUpdates = updateCalls.filter(c => {
+      const testState = { convergence: { history: [] } };
+      c.arguments[1](testState);
+      return testState.convergence?.history?.length > 0;
+    });
+    assert.ok(historyUpdates.length >= 2, 'should persist convergence history each iteration');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 25. failed-approaches-persisted — sm.update on regression
+// ---------------------------------------------------------------------------
+describe('failed-approaches-persisted', () => {
+  it('persists failed_approaches via sm.update on regression', async () => {
+    const preSha = 'abc1234';
+    const deps = makeMockDeps({ baseline_score: 50 });
+    deps.execSync = mock.fn((cmd) => {
+      if (typeof cmd === 'string') {
+        if (cmd.includes('rev-parse')) return Buffer.from(preSha);
+        if (cmd.includes('stash create')) return Buffer.from('ref\n');
+        if (cmd.includes('status --porcelain')) return Buffer.from('');
+      }
+      return Buffer.from('');
+    });
+    let callCount = 0;
+    deps.measureMetric = mock.fn(() => { callCount++; return callCount === 1 ? 50 : 40; }); // baseline=50, iter=40
+    await runMicroverse({ sessionDir: tmpDir, deps, maxIterations: 1 });
+    const updateCalls = deps.stateManager.update.mock.calls;
+    const failedUpdate = updateCalls.find(c => {
+      const testState = { failed_approaches: [], convergence: { history: [] } };
+      c.arguments[1](testState);
+      return testState.failed_approaches?.length > 0;
+    });
+    assert.ok(failedUpdate, 'sm.update should persist failed_approaches on regression');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 26. stall-counter-persisted — sm.update on stall
+// ---------------------------------------------------------------------------
+describe('stall-counter-persisted', () => {
+  it('persists stall_counter via sm.update when score stalls', async () => {
+    const deps = makeMockDeps({ baseline_score: 50, max_iterations: 1 });
+    deps.measureMetric = mock.fn(() => 50); // same as baseline = stall
+    await runMicroverse({ sessionDir: tmpDir, deps, maxIterations: 1 });
+    const updateCalls = deps.stateManager.update.mock.calls;
+    const stallUpdate = updateCalls.find(c => {
+      const testState = { convergence: { stall_counter: 0, history: [] } };
+      c.arguments[1](testState);
+      return testState.convergence?.stall_counter > 0;
+    });
+    assert.ok(stallUpdate, 'sm.update should persist stall_counter on stall');
   });
 });
