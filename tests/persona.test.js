@@ -42,11 +42,25 @@ const AGENT_FILES = [
   'anatomy-surgeon.md',
   'anatomy-verifier.md',
   'szechuan-reviewer.md',
+  'prd-drafter.md',
+  'prd-synthesizer.md',
+  'analyst-requirements.md',
+  'analyst-codebase.md',
+  'analyst-risk-scope.md',
 ];
 
 const REQUIRED_FRONTMATTER = ['id', 'title', 'model', 'tools', 'max_requests_per_turn'];
 
 const JUDGE_AGENTS = ['microverse-judge'];
+
+const NO_PERSONA_AGENTS = [
+  'microverse-judge',
+  'prd-drafter',
+  'prd-synthesizer',
+  'analyst-requirements',
+  'analyst-codebase',
+  'analyst-risk-scope',
+];
 
 const PERSONA_KEYWORDS = /rick|pickle|persona|belch/i;
 
@@ -130,9 +144,9 @@ describe('agent files', () => {
 // Persona injection — non-judge agents have persona keywords
 // ---------------------------------------------------------------------------
 describe('persona-injection', () => {
-  const nonJudgeFiles = AGENT_FILES.filter(f => !JUDGE_AGENTS.includes(f.replace('.md', '')));
+  const personaFiles = AGENT_FILES.filter(f => !NO_PERSONA_AGENTS.includes(f.replace('.md', '')));
 
-  for (const file of nonJudgeFiles) {
+  for (const file of personaFiles) {
     it(`${file} has persona keywords`, () => {
       const content = fs.readFileSync(path.join(AGENTS_DIR, file), 'utf-8');
       assert.ok(PERSONA_KEYWORDS.test(content), `${file} must have persona keywords (Rick/Pickle/persona/belch)`);
@@ -141,10 +155,10 @@ describe('persona-injection', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Judge agents — NO persona keywords
+// No-persona agents — NO persona keywords
 // ---------------------------------------------------------------------------
-describe('judge-no-persona', () => {
-  for (const agentId of JUDGE_AGENTS) {
+describe('no-persona-agents', () => {
+  for (const agentId of NO_PERSONA_AGENTS) {
     it(`${agentId}.md has NO persona keywords`, () => {
       const content = fs.readFileSync(path.join(AGENTS_DIR, `${agentId}.md`), 'utf-8');
       assert.ok(!PERSONA_KEYWORDS.test(content), `${agentId}.md must NOT have persona keywords`);
@@ -181,4 +195,34 @@ describe('judge-output-rules', () => {
       assert.ok(/entire response should be a single number/i.test(content), `${agentId}.md must instruct single-number output`);
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Tool restrictions — write/patch/shell access control
+// ---------------------------------------------------------------------------
+describe('tool-restrictions', () => {
+  it('anatomy-tracer has NO write or patch tools', () => {
+    const { meta } = parseFrontmatter(path.join(AGENTS_DIR, 'anatomy-tracer.md'));
+    assert.ok(!meta.tools.includes('write'), 'tracer must NOT have write');
+    assert.ok(!meta.tools.includes('patch'), 'tracer must NOT have patch');
+  });
+
+  it('anatomy-verifier has NO write or patch tools', () => {
+    const { meta } = parseFrontmatter(path.join(AGENTS_DIR, 'anatomy-verifier.md'));
+    assert.ok(!meta.tools.includes('write'), 'verifier must NOT have write');
+    assert.ok(!meta.tools.includes('patch'), 'verifier must NOT have patch');
+  });
+
+  it('anatomy-surgeon HAS write and patch tools', () => {
+    const { meta } = parseFrontmatter(path.join(AGENTS_DIR, 'anatomy-surgeon.md'));
+    assert.ok(meta.tools.includes('write'), 'surgeon must have write');
+    assert.ok(meta.tools.includes('patch'), 'surgeon must have patch');
+  });
+
+  it('microverse-judge has NO write, patch, or shell tools', () => {
+    const { meta } = parseFrontmatter(path.join(AGENTS_DIR, 'microverse-judge.md'));
+    assert.ok(!meta.tools.includes('write'), 'judge must NOT have write');
+    assert.ok(!meta.tools.includes('patch'), 'judge must NOT have patch');
+    assert.ok(!meta.tools.includes('shell'), 'judge must NOT have shell');
+  });
 });
