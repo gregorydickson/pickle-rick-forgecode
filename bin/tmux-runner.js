@@ -11,7 +11,7 @@ import { spawn as defaultSpawn } from 'node:child_process';
 import { StateManager } from '../lib/state-manager.js';
 import { CircuitBreaker } from '../lib/circuit-breaker.js';
 import { parseAutoDump as defaultParseAutoDump } from '../lib/token-parser.js';
-import { getCurrentSha as defaultGetCurrentSha, isDirty as defaultIsDirty, getDiffStat as defaultGetDiffStat } from '../lib/git-utils.js';
+import { getCurrentSha as defaultGetCurrentSha, isDirty as defaultIsDirty, getDiffStat as defaultGetDiffStat, createWorktree as defaultCreateWorktree, removeWorktree as defaultRemoveWorktree, cherryPick as defaultCherryPick } from '../lib/git-utils.js';
 import { writeHandoff as defaultWriteHandoff } from '../lib/handoff.js';
 
 // ---------------------------------------------------------------------------
@@ -219,18 +219,51 @@ export function createRunner(deps, configOverrides = {}) {
         });
         const result = await new Promise((resolve) => {
           let stderrData = '';
+          let resolved = false;
+          let hangGuardTimer = null;
+
           child.stderr.on('data', (chunk) => { stderrData += chunk.toString(); });
+
+          // Timeout: SIGTERM → SIGKILL escalation (same pattern as serial worker)
+          const timeoutTimer = setTimeout(() => {
+            if (!child.killed) {
+              child.kill('SIGTERM');
+              setTimeout(() => {
+                if (!child.killed) {
+                  child.kill('SIGKILL');
+                }
+                hangGuardTimer = setTimeout(() => {
+                  if (!resolved) {
+                    resolved = true;
+                    resolve({ ticket, code: null, signal: 'SIGKILL', stderrData: stderrData + '\n[hang-guard] process did not exit after SIGKILL', worktreePath });
+                  }
+                }, config.hangGuardMs);
+                hangGuardTimer.unref();
+              }, config.killEscalationMs);
+            }
+          }, config.workerTimeoutMs);
+
           child.on('exit', (code, signal) => {
+            if (resolved) return;
+            resolved = true;
+            clearTimeout(timeoutTimer);
+            if (hangGuardTimer) clearTimeout(hangGuardTimer);
             resolve({ ticket, code, signal, stderrData, worktreePath });
           });
         });
+        // Bug 1 fix: read SHA from worktree, not main HEAD
         if (result.code === 0) {
-          const sha = getCurrentSha();
+          const sha = getCurrentSha({ cwd: worktreePath });
           cherryPickFn(sha);
         }
         return result;
       } finally {
-        removeWorktreeFn(worktreePath);
+        // Bug 4 fix: robust cleanup — don't let removeWorktree throw mask the result
+        try {
+          removeWorktreeFn(worktreePath);
+        } catch {
+          // Worktree cleanup failed — log but don't propagate
+        }
       }
     });
     const settled = await Promise.allSettled(workerPromises);
@@ -265,6 +298,9 @@ async function main() {
     getCurrentSha: defaultGetCurrentSha,
     isDirty: defaultIsDirty,
     getDiffStat: defaultGetDiffStat,
+    createWorktree: defaultCreateWorktree,
+    removeWorktree: defaultRemoveWorktree,
+    cherryPick: defaultCherryPick,
     statePath,
   }, {
     rateLimitBackoffMs: 30000,

@@ -633,3 +633,107 @@ describe('parallel workers', () => {
     assert(deps.cherryPick.mock.callCount() >= 2, 'should cherry-pick commits from successful workers');
   });
 });
+
+// ---------------------------------------------------------------------------
+// 18. Bug fix: getCurrentSha uses worktree cwd
+// ---------------------------------------------------------------------------
+describe('parallel getCurrentSha uses worktree cwd', () => {
+  it('passes worktree path to getCurrentSha for cherry-pick', async () => {
+    const cwdArgs = [];
+    const deps = makeDeps({ max_iterations: 1 });
+    deps.createWorktree = mock.fn();
+    deps.removeWorktree = mock.fn();
+    deps.cherryPick = mock.fn();
+    deps.getCurrentSha = mock.fn((opts) => {
+      cwdArgs.push(opts?.cwd);
+      return 'worktree-sha';
+    });
+    deps.spawn = mock.fn(() => fakeChild(0));
+    const runner = createRunner(deps);
+    await runner.spawnParallelWorkers(['T-1', 'T-2'], '/base/dir');
+    // getCurrentSha should be called with { cwd: worktreePath } for each ticket
+    assert.equal(cwdArgs.length, 2, 'getCurrentSha called once per ticket');
+    assert(cwdArgs[0]?.includes('.worktree-T-1'), `Expected worktree path for T-1, got: ${cwdArgs[0]}`);
+    assert(cwdArgs[1]?.includes('.worktree-T-2'), `Expected worktree path for T-2, got: ${cwdArgs[1]}`);
+  });
+
+  it('cherry-picks the SHA from the worktree, not main', async () => {
+    const deps = makeDeps({ max_iterations: 1 });
+    deps.createWorktree = mock.fn();
+    deps.removeWorktree = mock.fn();
+    const pickedShas = [];
+    deps.cherryPick = mock.fn((sha) => { pickedShas.push(sha); });
+    deps.getCurrentSha = mock.fn((opts) => {
+      return opts?.cwd?.includes('worktree') ? 'worktree-sha-correct' : 'main-sha-wrong';
+    });
+    deps.spawn = mock.fn(() => fakeChild(0));
+    const runner = createRunner(deps);
+    await runner.spawnParallelWorkers(['T-1'], '/base/dir');
+    assert.equal(pickedShas[0], 'worktree-sha-correct', 'Should cherry-pick worktree SHA, not main HEAD');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 19. Bug fix: parallel worker timeout with SIGTERM→SIGKILL
+// ---------------------------------------------------------------------------
+describe('parallel worker timeout', () => {
+  it('sends SIGTERM then SIGKILL to hanging parallel worker', async () => {
+    const deps = makeDeps({ max_iterations: 1 });
+    deps.createWorktree = mock.fn();
+    deps.removeWorktree = mock.fn();
+    deps.cherryPick = mock.fn();
+    deps.getCurrentSha = mock.fn(() => 'abc');
+    const child = hangingChild();
+    deps.spawn = mock.fn(() => child);
+    const runner = createRunner(deps, { workerTimeoutMs: 50, killEscalationMs: 30 });
+    const results = await runner.spawnParallelWorkers(['T-1'], '/base/dir');
+    const signals = child.kill.mock.calls.map(c => c.arguments[0]);
+    assert(signals.includes('SIGTERM'), 'Should send SIGTERM to hanging parallel worker');
+    assert(signals.includes('SIGKILL'), 'Should escalate to SIGKILL for parallel worker');
+  });
+
+  it('resolves with timeout info when parallel worker hangs through SIGKILL', async () => {
+    const deps = makeDeps({ max_iterations: 1 });
+    deps.createWorktree = mock.fn();
+    deps.removeWorktree = mock.fn();
+    deps.cherryPick = mock.fn();
+    deps.getCurrentSha = mock.fn(() => 'abc');
+    const child = unkillableChild();
+    deps.spawn = mock.fn(() => child);
+    const runner = createRunner(deps, { workerTimeoutMs: 50, killEscalationMs: 30, hangGuardMs: 80 });
+    const results = await runner.spawnParallelWorkers(['T-1'], '/base/dir');
+    // Should resolve (not hang forever) and not cherry-pick
+    assert.equal(results.length, 1);
+    assert.equal(deps.cherryPick.mock.callCount(), 0, 'Should not cherry-pick timed-out worker');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 20. Bug fix: failed worktree cleanup is robust
+// ---------------------------------------------------------------------------
+describe('robust worktree cleanup', () => {
+  it('does not throw when removeWorktree fails', async () => {
+    const deps = makeDeps({ max_iterations: 1 });
+    deps.createWorktree = mock.fn();
+    deps.removeWorktree = mock.fn(() => { throw new Error('worktree remove failed'); });
+    deps.cherryPick = mock.fn();
+    deps.getCurrentSha = mock.fn(() => 'abc');
+    deps.spawn = mock.fn(() => fakeChild(0));
+    const runner = createRunner(deps);
+    // Should not throw even though removeWorktree throws
+    const results = await runner.spawnParallelWorkers(['T-1', 'T-2'], '/base/dir');
+    assert.equal(results.length, 2, 'Should return results even if cleanup fails');
+  });
+
+  it('still returns worker result when cleanup throws', async () => {
+    const deps = makeDeps({ max_iterations: 1 });
+    deps.createWorktree = mock.fn();
+    deps.removeWorktree = mock.fn(() => { throw new Error('cleanup boom'); });
+    deps.cherryPick = mock.fn();
+    deps.getCurrentSha = mock.fn(() => 'abc');
+    deps.spawn = mock.fn(() => fakeChild(0));
+    const runner = createRunner(deps);
+    const results = await runner.spawnParallelWorkers(['T-1'], '/base/dir');
+    assert.equal(results[0].code, 0, 'Worker result should be preserved despite cleanup failure');
+  });
+});

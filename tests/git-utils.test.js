@@ -44,6 +44,22 @@ describe('getCurrentSha', () => {
     execFn.mock.mockImplementation(() => { throw new Error('not a git repo'); });
     assert.throws(() => getCurrentSha(), /not a git repo/);
   });
+
+  it('passes cwd option to exec when provided', () => {
+    execFn.mock.mockImplementation(() => 'worktree-sha\n');
+    const sha = getCurrentSha({ cwd: '/tmp/worktree' });
+    assert.equal(sha, 'worktree-sha');
+    const opts = execFn.mock.calls[0].arguments[1];
+    assert.equal(opts.cwd, '/tmp/worktree');
+    assert.equal(opts.encoding, 'utf-8');
+  });
+
+  it('does not set cwd when opts is undefined', () => {
+    execFn.mock.mockImplementation(() => 'main-sha\n');
+    getCurrentSha();
+    const opts = execFn.mock.calls[0].arguments[1];
+    assert.equal(opts.cwd, undefined);
+  });
 });
 
 // ---------------------------------------------------------------------------
