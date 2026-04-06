@@ -16,6 +16,7 @@ import {
   writeHandoffContent,
   preflight,
   spawnWorker,
+  createBoundStateManager,
   AGENT_DEFS,
 } from '../bin/microverse-runner.js';
 
@@ -759,5 +760,59 @@ describe('stall-counter-persisted', () => {
       return testState.convergence?.stall_counter > 0;
     });
     assert.ok(stallUpdate, 'sm.update should persist stall_counter on stall');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 27. createBoundStateManager — CLI wiring helper
+// ---------------------------------------------------------------------------
+describe('createBoundStateManager', () => {
+  it('reads state from statePath and returns state + bound stateManager', () => {
+    const statePath = path.join(tmpDir, 'microverse.json');
+    const initialState = makeMockState();
+    fs.writeFileSync(statePath, JSON.stringify(initialState));
+
+    const { state, stateManager } = createBoundStateManager(statePath);
+    assert.equal(state.status, 'running', 'state should match file contents');
+    assert.ok(stateManager.update, 'stateManager should have update');
+    assert.ok(stateManager.forceWrite, 'stateManager should have forceWrite');
+    assert.ok(stateManager.read, 'stateManager should have read');
+  });
+
+  it('bound update(null, mutator) persists mutation to state file', () => {
+    const statePath = path.join(tmpDir, 'microverse.json');
+    fs.writeFileSync(statePath, JSON.stringify(makeMockState()));
+
+    const { state, stateManager } = createBoundStateManager(statePath);
+    stateManager.update(null, (s) => { s.iteration = 42; });
+
+    const persisted = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+    assert.equal(persisted.iteration, 42, 'mutation should be persisted to disk');
+    assert.equal(state.iteration, 42, 'in-memory state should reflect mutation');
+  });
+
+  it('bound forceWrite() persists current in-memory state', () => {
+    const statePath = path.join(tmpDir, 'microverse.json');
+    fs.writeFileSync(statePath, JSON.stringify(makeMockState()));
+
+    const { state, stateManager } = createBoundStateManager(statePath);
+    state.exit_reason = 'test_forced';
+    stateManager.forceWrite();
+
+    const persisted = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+    assert.equal(persisted.exit_reason, 'test_forced', 'forceWrite should persist in-memory state');
+  });
+
+  it('bound read() returns fresh state from disk', () => {
+    const statePath = path.join(tmpDir, 'microverse.json');
+    fs.writeFileSync(statePath, JSON.stringify(makeMockState()));
+
+    const { stateManager } = createBoundStateManager(statePath);
+    // Externally modify the file
+    const modified = makeMockState({ iteration: 99 });
+    fs.writeFileSync(statePath, JSON.stringify(modified));
+
+    const fresh = stateManager.read();
+    assert.equal(fresh.iteration, 99, 'read() should return fresh state from disk');
   });
 });

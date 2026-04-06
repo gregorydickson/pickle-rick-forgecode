@@ -10,6 +10,7 @@
 import { spawn as defaultSpawn, execSync as defaultExecSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { StateManager } from '../lib/state-manager.js';
 
 // ---------------------------------------------------------------------------
 // Agent definitions
@@ -341,6 +342,31 @@ function waitForChild(child, timeoutMs, hangGuardMs = 30000) {
 }
 
 // ---------------------------------------------------------------------------
+// CLI wiring — bound StateManager bridge
+// ---------------------------------------------------------------------------
+export function createBoundStateManager(statePath) {
+  const sm = new StateManager();
+  const state = sm.read(statePath);
+
+  return {
+    state,
+    stateManager: {
+      update(_, mutator) {
+        const updated = sm.update(statePath, mutator);
+        Object.assign(state, updated);
+        return state;
+      },
+      forceWrite() {
+        sm.forceWrite(statePath, state);
+      },
+      read() {
+        return sm.read(statePath);
+      },
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // CLI entry point
 // ---------------------------------------------------------------------------
 if (process.argv[1]?.endsWith('microverse-runner.js')) {
@@ -349,7 +375,14 @@ if (process.argv[1]?.endsWith('microverse-runner.js')) {
     process.stderr.write('Usage: microverse-runner.js <session-dir>\n');
     process.exit(1);
   }
-  runMicroverse({ sessionDir }).catch((err) => {
+
+  const statePath = path.join(sessionDir, 'microverse.json');
+  const { state, stateManager } = createBoundStateManager(statePath);
+
+  runMicroverse({
+    sessionDir,
+    deps: { state, stateManager, spawn: defaultSpawn, execSync: defaultExecSync },
+  }).catch((err) => {
     process.stderr.write(`Fatal: ${err.message}\n`);
     process.exit(1);
   });
